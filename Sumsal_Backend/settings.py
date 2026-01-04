@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import dj_database_url
 from pathlib import Path
 from urllib.parse import urlparse
 from django.core.management. utils import get_random_secret_key
@@ -23,16 +24,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", get_random_secret_key())
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", get_random_secret_key()) # Hard code this in .env to prevent reloading
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = [
-    host.strip() 
-    for host in os.getenv('DJANGO_ALLOWED_HOSTS', '').split(',') 
-    if host.strip()
-]
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',') if os.getenv('ALLOWED_HOSTS') else []
 
 # Application definition
 
@@ -80,6 +77,63 @@ WSGI_APPLICATION = 'Sumsal_Backend.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+
+# import socket
+
+# # Check if Docker is running
+# try:
+#     socket.create_connection(('127.0.0.1', 5432), timeout=1)
+#     db_host = '127.0.0.1'  # Docker port is mapped to localhost
+# except (socket.timeout, ConnectionRefusedError):
+#     db_host = 'localhost'  # Fallback
+
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'dev_db',
+#         'USER': 'postgres',
+#         'PASSWORD': 'postgres',
+#         'HOST': db_host,
+#         'PORT': '5432',
+#     }
+# }
+
+# DATABASES = {
+#     'default': dj_database_url.config(
+#         default='postgresql://postgres:postgres@127.0.0.1:5432/dev_db',
+#         conn_max_age=600,
+#         conn_health_checks=True,
+#         ssl_require=not DEBUG
+#     )
+# }
+
+# if DEBUG:
+#     DATABASES = {
+#         'default': {
+#             'ENGINE': 'django.db.backends.postgresql',
+#             'NAME': 'dev_db',
+#             'USER': 'postgres',
+#             'PASSWORD': 'postgres',
+#             'HOST': '127.0.0.1',
+#             'PORT': '5432',
+#         }
+#     }
+# else:
+#     DATABASES = {
+#         'default': dj_database_url.config(
+#             conn_max_age=600,
+#             conn_health_checks=True,
+#             ssl_require=True
+#         )
+#     }
+# 
+# DATABASES = {
+#     'default': dj_database_url.config(
+#         conn_max_age = 600,
+#         conn_health_checks = True,
+#         ssl_require = not DEBUG
+#     )
+# }
 
 if os.getenv('DATABASE_URL', '') != '':
     r = urlparse(os.environ.get('DATABASE_URL'))
@@ -139,9 +193,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'en-us' # Useless in react native, but for other localities using the website, inspecting thing and error codes will be in english
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'UTC' # Automate this probably. It's probably better if timestamps are set to the users local timezone, or don't
 
 USE_I18N = True
 
@@ -158,8 +212,19 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
 if DEBUG:
     import socket
-    INSTALLED_APPS += ['debug_toolbar']
-    MIDDLEWARE.insert(0, 'debug_toolbar.middleware.DebugToolbarMiddleware')
+    import builtins
+    from rich import print as rprint
+    from rich.traceback import install
+
+    install(show_locals=True)
+    builtins.print = rprint
+
+    INSTALLED_APPS += ['debug_toolbar', 'django_browser_reload']
+    # MIDDLEWARE.insert(0, 'debug_toolbar.middleware.DebugToolbarMiddleware')
+    MIDDLEWARE = [
+        'debug_toolbar.middleware.DebugToolbarMiddleware',
+        'django_browser_reload.middleware.BrowserReloadMiddleware',
+    ] + list(MIDDLEWARE)
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -177,6 +242,24 @@ if DEBUG:
     dev_hosts = [IP_ADDR, '127.0.0.1']
     for host in dev_hosts:
         ALLOWED_HOSTS.append(host)
+
+    LOGGING = {
+        'version': 1,
+        'disable_existing_loggers': False,
+        'handlers': {
+            'console': {
+                'class': 'rich.logging.RichHandler',
+                'rich_tracebacks': True,
+                'tracebacks_show_locals': True,
+            },
+        },
+        'loggers': {
+            'django': {
+                'handlers': ['console'],
+                'level': 'INFO',
+            },
+        },
+    }
 
 
 # Default primary key field type
