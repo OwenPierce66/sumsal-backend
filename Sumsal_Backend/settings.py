@@ -219,8 +219,12 @@ if DEBUG:
     install(show_locals=True)
     builtins.print = rprint
 
-    INSTALLED_APPS += ['debug_toolbar', 'django_browser_reload']
-    # MIDDLEWARE.insert(0, 'debug_toolbar.middleware.DebugToolbarMiddleware')
+    INSTALLED_APPS += [
+        'debug_toolbar',
+        'django_browser_reload',
+        'django_extensions',
+    ]
+
     MIDDLEWARE = [
         'debug_toolbar.middleware.DebugToolbarMiddleware',
         'django_browser_reload.middleware.BrowserReloadMiddleware',
