@@ -11,3 +11,8 @@ psycopg2-binary==2.9.11
 Pygments==2.19.2
 rich==14.2.0
 sqlparse==0.5.4
+django-browser-reload==1.21.0
+django-debug-toolbar==6.1.0
+django-extensions==4.1
+Pygments==2.19.2
+rich==14.2.0

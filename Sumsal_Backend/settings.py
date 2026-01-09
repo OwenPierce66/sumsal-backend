@@ -14,7 +14,6 @@ import os
 import dj_database_url
 from pathlib import Path
 from urllib.parse import urlparse
-from django.core.management. utils import get_random_secret_key
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -24,12 +23,18 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", get_random_secret_key()) # Hard code this in .env to prevent reloading
+SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+# DEBUG = os.getenv('DEBUG') == 'True'
+DEBUG = True
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',') if os.getenv('ALLOWED_HOSTS') else []
+# ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',') if os.getenv('ALLOWED_HOSTS') else []
+# CSRF_TRUSTED_ORIGINS = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS').split(',') if os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS') else []
+
+# if DEBUG:
+    # ALLOWED_HOSTS = ['*']
+    # CSRF_TRUSTED_ORIGINS = ['http://localhost:8001', 'http://127.0.0.1:8001']
 
 # Application definition
 
@@ -75,86 +80,18 @@ TEMPLATES = [
 WSGI_APPLICATION = 'Sumsal_Backend.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
-
-# import socket
-
-# # Check if Docker is running
-# try:
-#     socket.create_connection(('127.0.0.1', 5432), timeout=1)
-#     db_host = '127.0.0.1'  # Docker port is mapped to localhost
-# except (socket.timeout, ConnectionRefusedError):
-#     db_host = 'localhost'  # Fallback
-
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': 'dev_db',
-#         'USER': 'postgres',
-#         'PASSWORD': 'postgres',
-#         'HOST': db_host,
-#         'PORT': '5432',
-#     }
-# }
-
-# DATABASES = {
-#     'default': dj_database_url.config(
-#         default='postgresql://postgres:postgres@127.0.0.1:5432/dev_db',
-#         conn_max_age=600,
-#         conn_health_checks=True,
-#         ssl_require=not DEBUG
-#     )
-# }
-
-# if DEBUG:
-#     DATABASES = {
-#         'default': {
-#             'ENGINE': 'django.db.backends.postgresql',
-#             'NAME': 'dev_db',
-#             'USER': 'postgres',
-#             'PASSWORD': 'postgres',
-#             'HOST': '127.0.0.1',
-#             'PORT': '5432',
-#         }
-#     }
-# else:
-#     DATABASES = {
-#         'default': dj_database_url.config(
-#             conn_max_age=600,
-#             conn_health_checks=True,
-#             ssl_require=True
-#         )
-#     }
-# 
-# DATABASES = {
-#     'default': dj_database_url.config(
-#         conn_max_age = 600,
-#         conn_health_checks = True,
-#         ssl_require = not DEBUG
-#     )
-# }
-
-if os.getenv('DATABASE_URL', '') != '':
-    r = urlparse(os.environ.get('DATABASE_URL'))
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql_psycopg2',
-            'NAME': os.path.relpath(r.path, '/'),
-            'USER': r.username,
-            'PASSWORD': r.password,
-            'HOST': r.hostname,
-            'PORT': r.port,
-            'OPTIONS': {'sslmode': 'require'},
-        }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.{}'.format(
+            os.getenv('DATABASE_ENGINE', 'sqlite3') # Prob deleting the fucking sqlite backup
+        ),
+        'NAME': os.getenv('DATABASE_NAME', 'api'),
+        'USER': os.getenv('DATABASE_USERNAME', 'myprojectuser'),
+        'PASSWORD': os.getenv('DATABASE_PASSWORD', 'password'),
+        'HOST': os.getenv('DATABASE_HOST', '127.0.0.1'),
+        'PORT': os.getenv('DATABASE_PORT', 5432),
     }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
-    }
+}
 
 
 REST_FRAMEWORK = {
@@ -207,7 +144,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 
 if DEBUG:
@@ -240,12 +177,13 @@ if DEBUG:
 
     INTERNAL_IPS = [
         '127.0.0.1',
+        'localhost:8001',
         IP_ADDR,
     ]
 
-    dev_hosts = [IP_ADDR, '127.0.0.1']
-    for host in dev_hosts:
-        ALLOWED_HOSTS.append(host)
+    # dev_hosts = [IP_ADDR, 'localhost', '127.0.0.1', '0.0.0.0', 'django-web', 'localhost:8001']
+    # for host in dev_hosts:
+    #     ALLOWED_HOSTS.append(host)
 
     LOGGING = {
         'version': 1,
