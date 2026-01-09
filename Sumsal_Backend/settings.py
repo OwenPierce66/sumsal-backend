@@ -29,12 +29,9 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY')
 # DEBUG = os.getenv('DEBUG') == 'True'
 DEBUG = True
 
-# ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',') if os.getenv('ALLOWED_HOSTS') else []
-# CSRF_TRUSTED_ORIGINS = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS').split(',') if os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS') else []
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',') if os.getenv('ALLOWED_HOSTS') else []
+CSRF_TRUSTED_ORIGINS = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS').split(',') if os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS') else []
 
-# if DEBUG:
-    # ALLOWED_HOSTS = ['*']
-    # CSRF_TRUSTED_ORIGINS = ['http://localhost:8001', 'http://127.0.0.1:8001']
 
 # Application definition
 
@@ -185,23 +182,108 @@ if DEBUG:
     # for host in dev_hosts:
     #     ALLOWED_HOSTS.append(host)
 
+    # LOGGING = {
+    #     "version": 1,
+    #     "disable_existing_loggers": False,
+    #     "formatters": {
+    #         "rich": {
+    #             "datefmt": "[%X]",
+    #             "format": "%(message)s"
+    #         },
+    #     },
+    #     "handlers": {
+    #         "console": {
+    #             "class": "rich.logging.RichHandler",
+    #             "formatter": "rich",
+    #             "rich_tracebacks": True,  # This makes Django errors look amazing
+    #             "tracebacks_show_locals": True, # Shows variable values in the error log
+    #         },
+    #     },
+    #     "loggers": {
+    #         "django": {
+    #             "handlers": ["console"],
+    #             "level": "INFO",
+    #             "propagate": False,
+    #         },
+    #     },
+    # }
+
+    # LOGGING = {
+    #     "version": 1,
+    #     "disable_existing_loggers": False,
+    #     "formatters": {
+    #         "rich": {"datefmt": "[%X]", "format": "%(message)s"},
+    #     },
+    #     "handlers": {
+    #         "console": {
+    #             "class": "rich.logging.RichHandler",
+    #             "formatter": "rich",
+    #             "rich_tracebacks": True,
+    #         },
+    #     },
+    #     "loggers": {
+    #         # This catches the main Django logs
+    #         "django": {
+    #             "handlers": ["console"],
+    #             "level": "INFO",
+    #             "propagate": False,
+    #         },
+    #         # This catches the specific "GET /..." request logs
+    #         "django.server": {
+    #             "handlers": ["console"],
+    #             "level": "INFO",
+    #             "propagate": False,
+    #         },
+    #     },
+    # }
+
     LOGGING = {
-        'version': 1,
-        'disable_existing_loggers': False,
-        'handlers': {
-            'console': {
-                'class': 'rich.logging.RichHandler',
-                'rich_tracebacks': True,
-                'tracebacks_show_locals': True,
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "rich": {
+                "datefmt": "[%X]",
+                "format": "%(message)s"
             },
         },
-        'loggers': {
-            'django': {
-                'handlers': ['console'],
-                'level': 'INFO',
+        "handlers": {
+            "console": {
+                "class": "rich.logging.RichHandler",
+                "rich_tracebacks": True,
+                "markup": True,  # Allows you to use [bold red] tags in your own logs
+            },
+        },
+        "loggers": {
+            "django": {
+                "handlers": ["console"],
+                "level": "INFO",
+                "propagate": False,
+            },
+            "django.server": {
+                "handlers": ["console"],
+                "level": "INFO",
+                "propagate": False,  # This stops it from double-logging to the default output
             },
         },
     }
+
+    # LOGGING = {
+    #     'version': 1,
+    #     'disable_existing_loggers': False,
+    #     'handlers': {
+    #         'console': {
+    #             'class': 'rich.logging.RichHandler',
+    #             'rich_tracebacks': True,
+    #             'tracebacks_show_locals': True,
+    #         },
+    #     },
+    #     'loggers': {
+    #         'django': {
+    #             'handlers': ['console'],
+    #             'level': 'INFO',
+    #         },
+    #     },
+    # }
 
 
 # Default primary key field type

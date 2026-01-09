@@ -15,6 +15,12 @@ services:
       - db
     volumes:
       - ./static:/app/staticfiles
+    environment:
+      - PYTHONUNBUFFERED=1  # 1. These 5 lines where added by ai for the rich dev dependency to work with docker: Forces output to stream to console in real-time
+      - FORCE_COLOR=1       # 2. Tells Rich (and other tools) to use ANSI colors
+      - TERM=xterm-256color # 3. Mimics a high-color terminal inside the container
+    tty: true               # 4. Allocates a pseudo-TTY
+    stdin_open: true        # 5. Keeps the input stream open
     env_file:
       - .env.prod
 

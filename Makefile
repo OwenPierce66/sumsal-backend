@@ -17,12 +17,13 @@ down:
 	$(COMPOSE) down
 
 # View logs
-logs:
-	$(COMPOSE) logs -f
+# logs:
+# 	$(COMPOSE) logs -f
 
 # Specific logs for Django
-logs-web:
-	$(COMPOSE) logs -f django-web
+logs:
+# 	$(COMPOSE) logs -f django-web
+	$(COMPOSE) logs -f --no-log-prefix django-web
 
 # Enter the Django container's terminal
 shell:
@@ -38,7 +39,23 @@ migrations:
 superuser:
 	$(EXEC) python manage.py createsuperuser
 
-# The "Reset Everything" button
 reset:
-# 	$(COMPOSE) down -v
+	$(COMPOSE) down
+	$(COMPOSE) up -d
+	$(COMPOSE) logs -f --no-log-prefix django-web
+
+# Medium: Use this when you add a new Python library or change a config file
+reset-medium:
+	$(COMPOSE) down
+	$(COMPOSE) up -d --build
+	$(COMPOSE) logs -f --no-log-prefix django-web
+
+# Nuclear: Use this when the database is a mess or migrations are failing
+reset-hard:
+	$(COMPOSE) down -v
+	$(COMPOSE) up -d --build
+	$(COMPOSE) logs -f --no-log-prefix django-web
+
+a-reset:
+	$(COMPOSE) down
 	$(COMPOSE) up --build
