@@ -14,6 +14,7 @@ import os
 import dj_database_url
 from pathlib import Path
 from urllib.parse import urlparse
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -76,17 +77,17 @@ TEMPLATES = [
 WSGI_APPLICATION = 'Sumsal_Backend.wsgi.application'
 
 
+db_url = os.getenv('DATABASE_URL')
+
+if not db_url:
+    raise ImproperlyConfigured("DATABASE_URL is not set!")
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.{}'.format(
-            os.getenv('DATABASE_ENGINE', 'sqlite3') # Prob deleting the fucking sqlite backup
-        ),
-        'NAME': os.getenv('DATABASE_NAME', 'api'),
-        'USER': os.getenv('DATABASE_USERNAME', 'myprojectuser'),
-        'PASSWORD': os.getenv('DATABASE_PASSWORD', 'password'),
-        'HOST': os.getenv('DATABASE_HOST', '127.0.0.1'),
-        'PORT': os.getenv('DATABASE_PORT', 5432),
-    }
+    'default': dj_database_url.config(
+        default=db_url,
+        conn_max_age=600,
+        ssl_require=not DEBUG
+    )
 }
 
 
@@ -165,76 +166,21 @@ if DEBUG:
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
+        s.connect(('8.8.8.8', 80))
         IP_ADDR = s.getsockname()[0]
         s.close()
     except Exception:
-        IP_ADDR = 'localhost'
+        IP_ADDR = '127.0.0.1'
 
-    INTERNAL_IPS = [
-        '127.0.0.1',
-        'localhost:8001',
-        IP_ADDR,
-    ]
+    ALLOWED_HOSTS += [IP_ADDR]
+    
+    CSRF_TRUSTED_ORIGINS += [f"http://{IP_ADDR}:8001"]
 
-    # dev_hosts = [IP_ADDR, 'localhost', '127.0.0.1', '0.0.0.0', 'django-web', 'localhost:8001']
-    # for host in dev_hosts:
-    #     ALLOWED_HOSTS.append(host)
+    print(f"🚀🖤 React native api url🖤: http://{IP_ADDR}:8001/api/")
 
-    # LOGGING = {
-    #     "version": 1,
-    #     "disable_existing_loggers": False,
-    #     "formatters": {
-    #         "rich": {
-    #             "datefmt": "[%X]",
-    #             "format": "%(message)s"
-    #         },
-    #     },
-    #     "handlers": {
-    #         "console": {
-    #             "class": "rich.logging.RichHandler",
-    #             "formatter": "rich",
-    #             "rich_tracebacks": True,  # This makes Django errors look amazing
-    #             "tracebacks_show_locals": True, # Shows variable values in the error log
-    #         },
-    #     },
-    #     "loggers": {
-    #         "django": {
-    #             "handlers": ["console"],
-    #             "level": "INFO",
-    #             "propagate": False,
-    #         },
-    #     },
-    # }
-
-    # LOGGING = {
-    #     "version": 1,
-    #     "disable_existing_loggers": False,
-    #     "formatters": {
-    #         "rich": {"datefmt": "[%X]", "format": "%(message)s"},
-    #     },
-    #     "handlers": {
-    #         "console": {
-    #             "class": "rich.logging.RichHandler",
-    #             "formatter": "rich",
-    #             "rich_tracebacks": True,
-    #         },
-    #     },
-    #     "loggers": {
-    #         # This catches the main Django logs
-    #         "django": {
-    #             "handlers": ["console"],
-    #             "level": "INFO",
-    #             "propagate": False,
-    #         },
-    #         # This catches the specific "GET /..." request logs
-    #         "django.server": {
-    #             "handlers": ["console"],
-    #             "level": "INFO",
-    #             "propagate": False,
-    #         },
-    #     },
-    # }
+    DEBUG_TOOLBAR_CONFIG = {
+        'SHOW_TOOLBAR_CALLBACK': lambda request: True,
+    }
 
     LOGGING = {
         "version": 1,
@@ -249,7 +195,9 @@ if DEBUG:
             "console": {
                 "class": "rich.logging.RichHandler",
                 "rich_tracebacks": True,
-                "markup": True,  # Allows you to use [bold red] tags in your own logs
+                "markup": True,
+                "formatter": "rich",
+                "tracebacks_show_locals": True,
             },
         },
         "loggers": {
@@ -261,28 +209,10 @@ if DEBUG:
             "django.server": {
                 "handlers": ["console"],
                 "level": "INFO",
-                "propagate": False,  # This stops it from double-logging to the default output
+                "propagate": False,
             },
         },
     }
-
-    # LOGGING = {
-    #     'version': 1,
-    #     'disable_existing_loggers': False,
-    #     'handlers': {
-    #         'console': {
-    #             'class': 'rich.logging.RichHandler',
-    #             'rich_tracebacks': True,
-    #             'tracebacks_show_locals': True,
-    #         },
-    #     },
-    #     'loggers': {
-    #         'django': {
-    #             'handlers': ['console'],
-    #             'level': 'INFO',
-    #         },
-    #     },
-    # }
 
 
 # Default primary key field type

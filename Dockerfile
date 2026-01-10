@@ -1,37 +1,62 @@
 # Stage 1: Builder
 FROM python:3.13-slim AS builder
+
 WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1 
+
+# Accept an argument to decide which requirements to use (default to false)
+ARG DEV=false
+
+# Prevent Python from writing .pyc files and keep stdout unbuffered
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 
+
+# Install system build dependencies (needed for psycopg2 and other C-extensions)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --upgrade pip 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-dev.txt .
 
-# Stage 2: Final
+# Install dependencies to a temporary location (Conditional Dev Install)
+RUN if [ "$DEV" = "true" ]; \
+    then pip install --no-cache-dir --prefix=/install -r requirements-dev.txt; \
+    else pip install --no-cache-dir --prefix=/install -r requirements.txt; \
+    fi
+
+
+# Stage 2: Final (Production Image)
 FROM python:3.13-slim
-RUN useradd -m -r appuser && mkdir /app && chown -R appuser /app
+
+# Create a non-privileged system user
+RUN useradd -m -r appuser
+
 WORKDIR /app
 
-# Copy dependencies
-COPY --from=builder /usr/local/lib/python3.13/ /usr/local/lib/python3.13/
-COPY --from=builder /usr/local/bin/ /usr/local/bin/
+# Install runtime system dependencies (only the bare minimum for Postgres)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy code
+# Copy installed python packages from builder
+COPY --from=builder /install /usr/local
+
+# Copy code with correct ownership
 COPY --chown=appuser:appuser . .
 
-# We copy the entrypoint separately to make sure it has the right owner
-COPY --chown=appuser:appuser entrypoint.sh /entrypoint.sh
-# We make it executable so Linux is allowed to run it as a script
-RUN chmod +x /entrypoint.sh
+# Ensure entrypoint is executable
+RUN chmod +x /app/entrypoint.sh
 
-# Environment
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1 
+# Environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/usr/local/bin:$PATH"
 
-# Switch to root briefly to ensure entrypoint is executable if needed, 
-# but usually, appuser is fine if chmod was run correctly.
+# Switch to non-root user
 USER appuser
 
-# ENTRYPOINT tells Docker: "No matter what, run this script first."
-# This is where your migrations happen automatically!
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]

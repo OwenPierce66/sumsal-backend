@@ -1,6 +1,11 @@
 services:
   db:
     image: postgres:17
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     ports:
       - "5432:5432"
     volumes:
@@ -8,10 +13,14 @@ services:
     env_file: .env
 
   django-web:
-    build: .
+    build:
+      context: .
+      args:
+        - DEV=true
     container_name: django-docker
     depends_on:
-      - db
+      db:                          
+        condition: service_healthy
     volumes:
       - .:/app      # Hot-reload: Maps your code into the container. AI did it
       - ./static:/app/staticfiles
@@ -33,4 +42,4 @@ services:
     depends_on:
       - django-web
 volumes:
-  postgres_data:
+  postgres_data: {}
