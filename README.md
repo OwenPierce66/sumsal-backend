@@ -1,6 +1,11 @@
 <!-- Have the Makefile have all the perfect commands, and put them here in the order of what's needed for this project -->
 make reset: The first word make, is for triggering Makefile itself. After is the command inside Makefile.
 
+
+<!-- Docker likes to save all it old builds, which becomes massive. Run this sometimes -->
+docker system prune -f
+
+
 docker compose build: Creates the images defined in your docker-compose.yml. Use this when you change Python packages or the Dockerfile itself.
 
 docker compose up: Starts all services and streams the logs to your terminal.

@@ -1,5 +1,6 @@
 # Stage 1: Builder
-FROM python:3.13-slim AS builder
+# Pinning bookworm specifically to avoid the memory-heavy 'Trixie/Testing' repositories
+FROM python:3.13-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -11,7 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 
 
 # Install system build dependencies (needed for psycopg2 and other C-extensions)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Added cache mount for apt to speed up system installs and reduce memory pressure
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     python3-dev \
@@ -22,14 +26,16 @@ COPY requirements.txt .
 COPY requirements-dev.txt .
 
 # Install dependencies to a temporary location (Conditional Dev Install)
-RUN if [ "$DEV" = "true" ]; \
+# Added cache mount for pip. This prevents the 11,000 lines of re-downloading
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "$DEV" = "true" ]; \
     then pip install --no-cache-dir --prefix=/install -r requirements-dev.txt; \
     else pip install --no-cache-dir --prefix=/install -r requirements.txt; \
     fi
 
 
 # Stage 2: Final (Production Image)
-FROM python:3.13-slim
+FROM python:3.13-slim-bookworm
 
 # Create a non-privileged system user
 RUN useradd -m -r appuser
@@ -37,7 +43,9 @@ RUN useradd -m -r appuser
 WORKDIR /app
 
 # Install runtime system dependencies (only the bare minimum for Postgres)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
