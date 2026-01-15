@@ -77,6 +77,9 @@ TEMPLATES = [
 WSGI_APPLICATION = 'Sumsal_Backend.wsgi.application'
 
 
+AUTH_USER_MODEL = 'api.User'
+
+
 db_url = os.getenv('DATABASE_URL')
 
 if not db_url:
@@ -129,7 +132,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us' # Useless in react native, but for other localities using the website, inspecting thing and error codes will be in english
 
-TIME_ZONE = 'UTC' # Automate this probably. It's probably better if timestamps are set to the users local timezone, or don't
+TIME_ZONE = 'UTC'
 
 USE_I18N = True
 
