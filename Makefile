@@ -11,14 +11,14 @@ shell:
 	$(EXEC) bash
 
 migrate:
+	$(EXEC) python manage.py makemigrations api
 	$(EXEC) python manage.py migrate
-
-makemigrations:
-	$(EXEC) python manage.py makemigrations
 
 superuser:
 	$(EXEC) python manage.py createsuperuser
 
+help:
+	$(EXEC) python manage.py help
 
 reset-no-logs:
 	$(COMPOSE) down
