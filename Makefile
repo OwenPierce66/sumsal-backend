@@ -6,6 +6,12 @@ EXEC=$(COMPOSE) exec django-web
 logs:
 	$(COMPOSE) logs -f --no-log-prefix django-web
 
+translate-file:
+	$(EXEC) python manage.py makemessages -l es --ignore=env/* --ignore=venv/* --ignore=node_modules/* --ignore=static/* --ignore=media/* --ignore=htmlcov/*
+
+translate:
+	$(EXEC) python manage.py compilemessages
+	
 # Enter the Django container's terminal
 shell:
 	$(EXEC) bash

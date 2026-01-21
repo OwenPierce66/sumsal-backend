@@ -48,6 +48,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     netcat-openbsd \
+    gettext \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed python packages from builder

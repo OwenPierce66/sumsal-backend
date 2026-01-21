@@ -1,0 +1,137 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-01-21 23:03+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? "
+"1 : 2;\n"
+
+#: Sumsal_Backend/settings.py:164
+msgid "English"
+msgstr "Inglés"
+
+#: Sumsal_Backend/settings.py:165
+msgid "Spanish"
+msgstr "Español"
+
+#: Sumsal_Backend/settings.py:166
+msgid "French"
+msgstr "Francés"
+
+#: api/admin.py:10
+msgid "Profile Metadata"
+msgstr "Metadatos del Perfil"
+
+#: api/admin.py:17
+msgid "Password"
+msgstr "Contraseña"
+
+#: api/admin.py:42
+msgid "Account Basics"
+msgstr "Información Básica de la Cuenta"
+
+#: api/admin.py:43
+msgid "Permissions"
+msgstr "Permisos"
+
+#: api/admin.py:44 api/admin.py:80
+msgid "Important dates"
+msgstr "Fechas Importantes"
+
+#: api/admin.py:48
+msgid "Create New User"
+msgstr "Crear Nuevo Usuario"
+
+#: api/admin.py:68
+#, python-format
+msgid "🚀 Boom! User %(email)s is now live."
+msgstr "🚀 ¡Boom! El usuario %(email)s ya está activo."
+
+#: api/admin.py:79
+msgid "Profile Basics"
+msgstr "Información del Perfil"
+
+#: api/admin.py:83 api/models.py:38
+msgid "first name"
+msgstr "nombre"
+
+#: api/admin.py:87 api/models.py:39
+msgid "last name"
+msgstr "apellido"
+
+#: api/models.py:9
+msgid "created at"
+msgstr "creado el"
+
+#: api/models.py:10
+msgid "updated at"
+msgstr "actualizado el"
+
+#: api/models.py:18
+msgid "Users must have an email address"
+msgstr "Los usuarios deben tener una dirección de correo electrónico"
+
+#: api/models.py:36
+msgid "id"
+msgstr "ID"
+
+#: api/models.py:37
+msgid "email address"
+msgstr "correo electrónico"
+
+#: api/models.py:41
+msgid "is active"
+msgstr "está activo"
+
+#: api/models.py:41
+msgid "Unselect this instead of deleting accounts."
+msgstr "Desmarque esto en lugar de eliminar cuentas."
+
+#: api/models.py:42
+msgid "is staff"
+msgstr "es miembro del equipo"
+
+#: api/models.py:43
+msgid "date joined"
+msgstr "fecha de registro"
+
+#: api/models.py:44
+msgid "last updated"
+msgstr "última actualización"
+
+#: api/models.py:52 api/models.py:65
+msgid "user"
+msgstr "usuario"
+
+#: api/models.py:53
+msgid "users"
+msgstr "usuarios"
+
+#: api/models.py:60
+msgid "ID"
+msgstr "ID"
+
+#: api/models.py:69
+msgid "profile"
+msgstr "perfil"
+
+#: api/models.py:70
+msgid "profiles"
+msgstr "perfiles"
+
+#: api/models.py:74
+#, python-format
+msgid "Profile for %(email)s"
+msgstr "Perfil de %(email)s"
