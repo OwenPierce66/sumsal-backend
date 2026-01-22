@@ -1,31 +1,41 @@
 from rest_framework.throttling import UserRateThrottle, AnonRateThrottle
 
+
 class UserMeThrottle(UserRateThrottle):
-    scope = 'user_me'
+    scope = "user_me"
+
 
 class RegisterAnonThrottle(AnonRateThrottle):
-    scope = 'auth'
+    scope = "auth"
+
 
 class RegisterUserThrottle(UserRateThrottle):
-    scope = 'auth'
+    scope = "auth"
+
 
 class LoginThrottle(UserRateThrottle):
-    scope = 'auth'
+    scope = "auth"
+
 
 class RefreshThrottle(UserRateThrottle):
-    scope = 'auth'
+    scope = "auth"
+
 
 class BurstThrottle(UserRateThrottle):
-    scope = 'burst'
+    scope = "burst"
+
 
 class SustainedThrottle(UserRateThrottle):
-    scope = 'sustained'
+    scope = "sustained"
+
 
 class VaultThrottle(UserRateThrottle):
-    scope = 'vault'
+    scope = "vault"
+
 
 class UploadThrottle(UserRateThrottle):
-    scope = 'uploads'
+    scope = "uploads"
+
 
 class PublicApiThrottle(AnonRateThrottle):
-    scope = 'public'
+    scope = "public"

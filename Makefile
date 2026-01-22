@@ -11,10 +11,13 @@ translate-file:
 
 translate:
 	$(EXEC) python manage.py compilemessages
-	
+
 # Enter the Django container's terminal
 shell:
 	$(EXEC) bash
+
+black:
+	$(EXEC) black .
 
 migrate:
 	$(EXEC) python manage.py makemigrations api

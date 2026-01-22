@@ -1,6 +1,11 @@
 -r requirements.txt
 
+black==26.1.0
+click==8.3.1
 django-browser-reload==1.21.0
 django-debug-toolbar==6.1.0
 django-extensions==4.1
+mypy_extensions==1.1.0
+pathspec==1.0.3
+platformdirs==4.5.1
 rich==14.2.0
