@@ -13,6 +13,7 @@ except ImportError:
     VideoStorage = default_storage
 
 
+
 class UserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
         if not email:
