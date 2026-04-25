@@ -241,34 +241,17 @@ class TaskSerializer(serializers.ModelSerializer):
     user = SimpleUserSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
-    comments_count = serializers.SerializerMethodField()
-    shared_by_list = serializers.SerializerMethodField()
+    # Usamos el related_name que pusimos en el modelo
+    comments = NewPeticionCommentSerializer(many=True, read_only=True) 
 
     class Meta:
         model = ms.Task
         fields = [
-            "id",
-            "user",
-            "title",
-            "description",
-            "pch",
-            "username",
-            "categories",
-            "image",
-            "video",
-            "share_count",
-            "likes_count",
-            "user_has_liked",
-            "comments_count",
-            "shared_by_list",
-            "created_at",
-            "updated_at",
+            "id", "user", "title", "description", "pch", "username",
+            "categories", "image", "video", "share_count", "likes_count",
+            "user_has_liked", "comments", "created_at"
         ]
-        read_only_fields = ["id", "user", "share_count", "created_at", "updated_at"]
-
-    def create(self, validated_data):
-        validated_data["user"] = self.context["request"].user
-        return super().create(validated_data)
+        read_only_fields = ["id", "user", "share_count", "created_at"]
 
     def get_likes_count(self, obj):
         return obj.likes.count()
@@ -278,21 +261,7 @@ class TaskSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.likes.filter(user=request.user).exists()
         return False
-
-    def get_comments_count(self, obj):
-        return obj.comments.count()
-
-    def get_shared_by_list(self, obj):
-        shares = obj.shared_tasks.select_related("shared_by").all()
-        return [
-            {
-                "id": share.shared_by.id if share.shared_by else None,
-                "email": share.shared_by.email if share.shared_by else "unknown",
-                "description": share.description or "",
-            }
-            for share in shares
-        ]
-
+    
 
 class SharedTaskSerializer(serializers.ModelSerializer):
     task = TaskSerializer(read_only=True)

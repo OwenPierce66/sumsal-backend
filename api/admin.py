@@ -196,10 +196,16 @@ class SharedTaskAdmin(admin.ModelAdmin):
 
 @admin.register(NewPeticionCommentPost)
 class CommentAdmin(admin.ModelAdmin):
-    list_display = ["created_by", "post", "is_parent", "created_at"]
+    # En lugar de "is_parent" directo, usamos una función
+    list_display = ["created_by", "post", "check_is_parent", "created_at"]
     search_fields = ["created_by__email", "post__title", "text"]
     list_filter = ["created_at"]
     readonly_fields = ["created_at", "updated_at"]
+
+    # Esta función permite que el admin muestre si es padre o hijo
+    @admin.display(boolean=True, description=_("Is parent"))
+    def check_is_parent(self, obj):
+        return obj.parent is None
 
 
 @admin.register(LikeCommentPost)
