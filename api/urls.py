@@ -72,7 +72,7 @@ urlpatterns = [
     path("verify-admin/", vs.verify_admin, name="verify-admin"),
     path("admin/users/<uuid:user_id>/verify/", vs.admin_verify_user, name="admin-verify"),
         # ========== ADMIN ==========
-    path("admin/users/<int:user_id>/recommend/", vs.admin_recommend_user, name="admin-recommend"),
     path("admin/tasks/<int:task_id>/like/", vs.admin_app_like_task, name="admin-task-like"),
-    path("admin/profiles/<int:profile_id>/like/", vs.admin_app_like_profile, name="admin-profile-like"),
+    path("admin/users/<uuid:user_id>/recommend/", vs.admin_recommend_user, name="admin-recommend"),
+    path("admin/profiles/<uuid:profile_id>/like/", vs.admin_app_like_profile, name="admin-profile-like"),
 ]

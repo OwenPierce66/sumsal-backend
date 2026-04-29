@@ -224,9 +224,18 @@ if DEBUG:
     except Exception:
         IP_ADDR = "127.0.0.1"
 
-    ALLOWED_HOSTS += [IP_ADDR]
+    ALLOWED_HOSTS = ["*", "127.0.0.1", "localhost", IP_ADDR]
 
     CSRF_TRUSTED_ORIGINS += [f"http://{IP_ADDR}:8001"]
+
+    CORS_ALLOW_ALL_ORIGINS = True
+
+    # Aseguramos que CSRF confíe en tu IP local
+    CSRF_TRUSTED_ORIGINS = [
+        f"http://{IP_ADDR}:8001",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+    ]
 
     print(f"🚀🖤 React native api url🖤: http://{IP_ADDR}:8001/api/")
 
