@@ -37,6 +37,10 @@ urlpatterns = [
     
     # ========== COMENTARIOS (Hilos anidados) ==========
     path("tasks/<int:task_id>/comments/", vs.TaskCommentListCreateView.as_view(), name="task-comments"),
+    
+    # ⚡ LA LÍNEA MÁGICA PARA BORRAR Y EDITAR COMENTARIOS
+    path("tasks/<int:task_id>/comments/<int:comment_id>/", vs.NewPeticionCommentDetailsView.as_view(), name="task-comment-detail"),
+    
     path("comments/<int:comment_id>/like/", vs.toggle_comment_like, name="comment-like"),
     
     # ========== SOCIAL Y COMPARTIR ==========

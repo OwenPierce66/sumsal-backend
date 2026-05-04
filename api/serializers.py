@@ -206,7 +206,10 @@ class RecursiveCommentSerializer(serializers.Serializer):
 
 class NewPeticionCommentSerializer(serializers.ModelSerializer):
     created_by = SimpleUserSerializer(read_only=True)
-    children = RecursiveCommentSerializer(many=True, read_only=True)
+    
+    # 🛡️ FIX 500: Lee del related_name "replies", pero lo exporta como "children" para React Native
+    children = RecursiveCommentSerializer(source='replies', many=True, read_only=True)
+    
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
 
@@ -225,7 +228,8 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_by"]
+        # 🛡️ FIX 400: Añadimos 'post' para que DRF no lo exija en la validación inicial
+        read_only_fields = ["id", "created_by", "post"]
 
     def get_likes_count(self, obj):
         return obj.likes.count()
@@ -235,8 +239,7 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return obj.likes.filter(user=request.user).exists()
         return False
-
-
+    
 class SubTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.SubTask # Asegúrate de que el modelo sea el correcto

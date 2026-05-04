@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.conf import settings
+from rest_framework.exceptions import PermissionDenied
 
 from rest_framework import status, generics
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -198,12 +199,27 @@ class TaskCommentListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         task_id = self.kwargs.get("task_id")
+        # 🛡️ FIX 500: Usamos "replies" porque así se llama el related_name en models.py
         return ms.NewPeticionCommentPost.objects.filter(
             post_id=task_id, parent__isnull=True
-        ).select_related("created_by__profile").prefetch_related("children", "likes")
+        ).select_related("created_by__profile").prefetch_related("replies", "likes")
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, post_id=self.kwargs.get("task_id"))
+
+
+class NewPeticionCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = ms.NewPeticionCommentPost.objects.all()
+    serializer_class = NewPeticionCommentSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_url_kwarg = "comment_id" # Django buscará el <int:comment_id> de la URL
+
+    def perform_destroy(self, instance):
+        # 🛡️ SEGURIDAD: Solo el creador del comentario (o un admin) puede borrarlo
+        if instance.created_by != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para eliminar este comentario.")
+        instance.delete()
+        
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
