@@ -196,6 +196,14 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 
+
+# ============================================================================
+# MEDIA FILES (Imágenes, Videos, Archivos subidos por usuarios)
+# ============================================================================
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 if DEBUG:
     import socket
     import builtins

@@ -232,3 +232,60 @@ class Postt(TimeStampedModel):
     content = models.TextField()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="forum_posts")
     parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="forum_replies")
+
+
+# ============================================================================
+# APORTACIONES INTERNAS (SUBTASKS, FUENTES, FACTORES)
+# ============================================================================
+
+class SubTask(models.Model):
+    parent_task = models.ForeignKey(Task, related_name='subtasks', on_delete=models.CASCADE)
+    title = models.CharField(max_length=1000, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to="subtasks/images/", null=True, blank=True)
+    video = models.FileField(upload_to="subtasks/videos/", null=True, blank=True)
+    link = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class SubFuentes(models.Model):
+    parent_task = models.ForeignKey(Task, related_name='subfuentes', on_delete=models.CASCADE)
+    title = models.CharField(max_length=1000, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to="subfuentes/images/", null=True, blank=True)
+    video = models.FileField(upload_to="subfuentes/videos/", null=True, blank=True)
+    link = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+class SubFactores(models.Model):
+    parent_task = models.ForeignKey(Task, related_name='subfactores', on_delete=models.CASCADE)
+    title = models.CharField(max_length=1000, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to="subfactores/images/", null=True, blank=True)
+    video = models.FileField(upload_to="subfactores/videos/", null=True, blank=True)
+    link = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+# Tambien faltan los comentarios de los Subtasks, añadimos las referencias base
+class SubTaskCommentPost(models.Model):
+    parent_task = models.ForeignKey(NewPeticionCommentPost, related_name='subtasks', on_delete=models.CASCADE)
+    title = models.CharField(max_length=1000, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    link = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to="comments/subtasks/images/", null=True, blank=True)
+    video = models.FileField(upload_to="comments/subtasks/videos/", null=True, blank=True)
+
+class SubFactoresCommentPost(models.Model):
+    parent_task = models.ForeignKey(NewPeticionCommentPost, related_name='subfactores', on_delete=models.CASCADE)
+    title = models.CharField(max_length=1000, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    link = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to="comments/subfactores/images/", null=True, blank=True)
+    video = models.FileField(upload_to="comments/subfactores/videos/", null=True, blank=True)
+
+class SubFuentesCommentPost(models.Model):
+    parent_task = models.ForeignKey(NewPeticionCommentPost, related_name='subfuentes', on_delete=models.CASCADE)
+    title = models.CharField(max_length=1000, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+    link = models.TextField(blank=True, default='')
+    image = models.ImageField(upload_to="comments/subfuentes/images/", null=True, blank=True)
+    video = models.FileField(upload_to="comments/subfuentes/videos/", null=True, blank=True)

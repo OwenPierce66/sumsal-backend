@@ -237,20 +237,35 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
         return False
 
 
+class SubTaskSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ms.SubTask # Asegúrate de que el modelo sea el correcto
+        fields = '__all__'
+
+class SubFactoresSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ms.SubFactores
+        fields = '__all__'
+
+class SubFuentesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ms.SubFuentes
+        fields = '__all__'
+
+
+
 class TaskSerializer(serializers.ModelSerializer):
     user = SimpleUserSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
-    # Usamos el related_name que pusimos en el modelo
     comments = NewPeticionCommentSerializer(many=True, read_only=True) 
+    subtasks = SubTaskSerializer(many=True, read_only=True)
+    subfactores = SubFactoresSerializer(many=True, read_only=True)
+    subfuentes = SubFuentesSerializer(many=True, read_only=True)
 
     class Meta:
         model = ms.Task
-        fields = [
-            "id", "user", "title", "description", "pch", "username",
-            "categories", "image", "video", "share_count", "likes_count",
-            "user_has_liked", "comments", "created_at"
-        ]
+        fields = '__all__'
         read_only_fields = ["id", "user", "share_count", "created_at"]
 
     def get_likes_count(self, obj):

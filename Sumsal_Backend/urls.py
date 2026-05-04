@@ -20,6 +20,8 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf.urls.i18n import i18n_patterns
 
+from django.conf.urls.static import static
+
 urlpatterns = [
     path("api/", include("api.urls")),
     # Temporarily disabled for migration
@@ -40,3 +42,5 @@ if settings.DEBUG:
         path("__debug__/", include("debug_toolbar.urls")),
         path("__reload__/", include("django_browser_reload.urls")),
     ]
+# <--- ESTA ES LA LÍNEA MÁGICA QUE LE MANDA LAS IMÁGENES AL CELULAR
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

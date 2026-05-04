@@ -85,13 +85,75 @@ class TaskListCreateView(generics.ListCreateAPIView):
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = StandardPagination
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         qs = super().get_queryset()
         pch = self.request.query_params.get("pch")
-        if pch: qs = qs.filter(pch=pch)
-        # Aquí es donde fallaba: 'comments' ahora sí existirá por el cambio en models.py
-        return qs.select_related("user").prefetch_related("likes", "comments").order_by('-created_at')
+        if pch: 
+            qs = qs.filter(pch=pch)
+        return qs.select_related("user").prefetch_related(
+            "likes", "comments", "subtasks", "subfuentes", "subfactores"
+        ).order_by('-created_at')
+
+    def post(self, request, *args, **kwargs):
+        print("====== LLAVES RECIBIDAS DESDE REACT NATIVE ======")
+        print(request.data.keys())
+        print("=================================================")
+        
+        # 1. Extraemos los datos básicos y creamos la tarea PRINCIPAL
+        data = request.data.dict() if hasattr(request.data, 'dict') else request.data
+        data['user'] = request.user.id
+        
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save(user=request.user)
+
+        # 2. PROCESAMIENTO DE ARRAYS (Usando el FOR seguro)
+        
+        # --- Procesar Subtasks ---
+        for index in range(20):
+            title = request.data.get(f'subtasks[{index}][title]')
+            if title:
+                ms.SubTask.objects.create(
+                    parent_task=task,
+                    title=title,
+                    description=request.data.get(f'subtasks[{index}][description]', ''),
+                    image=request.FILES.get(f'subtasks[{index}][image]'),
+                    video=request.FILES.get(f'subtasks[{index}][video]'),
+                    link=request.data.get(f'subtasks[{index}][link]', '')
+                )
+
+        # --- Procesar SubFuentes ---
+        for index in range(20):
+            title = request.data.get(f'subfuentes[{index}][title]')
+            if title:
+                ms.SubFuentes.objects.create(
+                    parent_task=task,
+                    title=title,
+                    description=request.data.get(f'subfuentes[{index}][description]', ''),
+                    image=request.FILES.get(f'subfuentes[{index}][image]'),
+                    video=request.FILES.get(f'subfuentes[{index}][video]'),
+                    link=request.data.get(f'subfuentes[{index}][link]', '')
+                )
+
+        # --- Procesar SubFactores ---
+        for index in range(20):
+            title = request.data.get(f'subfactores[{index}][title]')
+            if title:
+                ms.SubFactores.objects.create(
+                    parent_task=task,
+                    title=title,
+                    description=request.data.get(f'subfactores[{index}][description]', ''),
+                    image=request.FILES.get(f'subfactores[{index}][image]'),
+                    video=request.FILES.get(f'subfactores[{index}][video]'),
+                    link=request.data.get(f'subfactores[{index}][link]', '')
+                )
+
+        # 3. Devolvemos el objeto completo
+        full_serializer = self.get_serializer(task)
+        return Response(full_serializer.data, status=status.HTTP_201_CREATED)
+    
     
     
 class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
