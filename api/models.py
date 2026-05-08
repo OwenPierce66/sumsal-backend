@@ -40,6 +40,7 @@ class UserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
     """Modelo de Usuario Sumsal con UUID e Email"""
     id = models.UUIDField(_("id"), primary_key=True, default=uuid.uuid4, editable=False)
+    username = models.CharField(_("username"), max_length=150, unique=True, null=True, blank=True)
     email = models.EmailField(_("email address"), unique=True)
     first_name = models.CharField(_("first name"), max_length=255, blank=True)
     last_name = models.CharField(_("last name"), max_length=255, blank=True)
