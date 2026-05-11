@@ -326,16 +326,31 @@ class ImagenFijaSerializer(serializers.ModelSerializer):
 class PosttSerializer(serializers.ModelSerializer):
     user = SimpleUserSerializer(read_only=True)
     replies = serializers.SerializerMethodField()
+    title = serializers.CharField(required=False, allow_blank=True)
+    likes_count = serializers.SerializerMethodField()
+    has_liked = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Postt
-        fields = ["id", "title", "content", "user", "parent", "replies", "created_at"]
-        read_only_fields = ["id", "user", "created_at"]
+        fields = ["id", "title", "content", "user", "parent", "replies", "created_at", "likes_count", "has_liked"]
+        read_only_fields = ["id", "user", "created_at", "likes_count", "has_liked"]
 
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
+        # Si no hay title o está vacío, usar null o un valor por defecto
+        if not validated_data.get("title"):
+            validated_data["title"] = ""
         return super().create(validated_data)
 
     def get_replies(self, obj):
         replies = ms.Postt.objects.filter(parent=obj)
         return PosttSerializer(replies, many=True, context=self.context).data
+
+    def get_likes_count(self, obj):
+        return ms.LikePostt.objects.filter(post=obj).count()
+
+    def get_has_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return ms.LikePostt.objects.filter(user=request.user, post=obj).exists()
+        return False

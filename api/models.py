@@ -229,10 +229,19 @@ class ImagenFija(TimeStampedModel):
 
 class Postt(TimeStampedModel):
     """Hilo de foro simple"""
-    title = models.CharField(max_length=100)
+    title = models.CharField(max_length=100, blank=True)
     content = models.TextField()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="forum_posts")
     parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="forum_replies")
+
+
+class LikePostt(TimeStampedModel):
+    """Likes para posts del foro"""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="post_likes")
+    post = models.ForeignKey(Postt, on_delete=models.CASCADE, related_name="likes")
+
+    class Meta:
+        unique_together = ("user", "post")
 
 
 # ============================================================================

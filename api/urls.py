@@ -79,4 +79,9 @@ urlpatterns = [
     path("admin/tasks/<int:task_id>/like/", vs.admin_app_like_task, name="admin-task-like"),
     path("admin/users/<uuid:user_id>/recommend/", vs.admin_recommend_user, name="admin-recommend"),
     path("admin/profiles/<uuid:profile_id>/like/", vs.admin_app_like_profile, name="admin-profile-like"),
+    
+    # ========== FORO (Forum Posts) ==========
+    path("posts/", vs.PostListCreateView.as_view(), name="post-list-create"),
+    path("posts/<int:id>/", vs.PostDetailView.as_view(), name="post-detail"),
+    path("posts/<int:post_id>/like/", vs.toggle_post_like, name="post-like"),
 ]

@@ -480,3 +480,46 @@ def admin_app_like_profile(request, profile_id):
         "liked": True,
         "likes_count": ms.LikeP.objects.filter(profile=profile_user).count()
     })
+
+# ============================================================================
+# FORO (Posts)
+# ============================================================================
+
+class PostListCreateView(generics.ListCreateAPIView):
+    queryset = ms.Postt.objects.filter(parent__isnull=True)
+    serializer_class = PosttSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardPagination
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    def get_queryset(self):
+        return ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related("likes", "forum_replies").order_by('-created_at')
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
+
+
+class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = ms.Postt.objects.all()
+    serializer_class = PosttSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        return super().get_queryset().select_related("user").prefetch_related("likes", "forum_replies")
+
+    def perform_destroy(self, instance):
+        if instance.user != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No autorizado para eliminar este post.")
+        instance.delete()
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_post_like(request, post_id):
+    post = get_object_or_404(ms.Postt, id=post_id)
+    like, created = ms.LikePostt.objects.get_or_create(user=request.user, post=post)
+    if not created:
+        like.delete()
+        return Response({"liked": False, "likes_count": post.likes.count()})
+    return Response({"liked": True, "likes_count": post.likes.count()}, status=201)
