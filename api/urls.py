@@ -44,8 +44,7 @@ urlpatterns = [
     path("comments/<int:comment_id>/like/", vs.toggle_comment_like, name="comment-like"),
     
     # ========== SOCIAL Y COMPARTIR ==========
-    path("shared-tasks/", vs.create_shared_task, name="create-shared-task"),
-    path("shared-tasks/<int:shared_task_id>/", vs.delete_shared_task, name="delete-shared-task"),
+    path("shared-tasks/", vs.SharedTaskListCreateView.as_view(), name="shared-task-list-create"),
     path("tasks/<int:task_id>/users-who-shared/", vs.users_who_shared_task, name="users-who-shared"),
     
     # ========== FAVORITOS (Tareas y Perfiles) ==========
@@ -84,4 +83,11 @@ urlpatterns = [
     path("posts/", vs.PostListCreateView.as_view(), name="post-list-create"),
     path("posts/<int:id>/", vs.PostDetailView.as_view(), name="post-detail"),
     path("posts/<int:post_id>/like/", vs.toggle_post_like, name="post-like"),
+    
+    # ========== TAREAS COMPARTIDAS ==========
+    path("shared-tasks/<int:id>/", vs.SharedTaskDetailView.as_view(), name="shared-task-detail"),
+    path("shared-tasks/<int:shared_task_id>/like/", vs.toggle_shared_task_like, name="shared-task-like"),
+    path("shared-tasks/<int:shared_task_id>/comments/", vs.SharedTaskCommentListCreateView.as_view(), name="shared-task-comments"),
+    path("shared-tasks/<int:shared_task_id>/comments/<int:comment_id>/", vs.SharedTaskCommentDetailsView.as_view(), name="shared-task-comment-detail"),
+    path("shared-tasks/<int:shared_task_id>/comments/<int:comment_id>/like/", vs.toggle_shared_task_comment_like, name="shared-task-comment-like"),
 ]

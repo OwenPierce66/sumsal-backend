@@ -263,6 +263,7 @@ class TaskSerializer(serializers.ModelSerializer):
     user = SimpleUserSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
     comments = NewPeticionCommentSerializer(many=True, read_only=True) 
     subtasks = SubTaskSerializer(many=True, read_only=True)
     subfactores = SubFactoresSerializer(many=True, read_only=True)
@@ -273,6 +274,14 @@ class TaskSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ["id", "user", "share_count", "created_at"]
 
+    def _count_nested_comments(self, comment):
+        """Cuenta un comentario y todas sus respuestas recursivamente"""
+        count = 1  # Contar el comentario actual
+        replies = comment.replies.all()  # Acceder a las respuestas anidadas
+        for reply in replies:
+            count += self._count_nested_comments(reply)
+        return count
+
     def get_likes_count(self, obj):
         return obj.likes.count()
 
@@ -282,15 +291,60 @@ class TaskSerializer(serializers.ModelSerializer):
             return obj.likes.filter(user=request.user).exists()
         return False
     
+    def get_comments_count(self, obj):
+        """Devuelve el total de comentarios anidados"""
+        try:
+            # Obtener solo los comentarios padre (sin parent)
+            parent_comments = obj.comments.filter(parent__isnull=True)
+            total = sum(self._count_nested_comments(c) for c in parent_comments)
+            return total
+        except Exception as e:
+            print(f"Error counting comments: {e}")
+            return 0
+    
 
 class SharedTaskSerializer(serializers.ModelSerializer):
     task = TaskSerializer(read_only=True)
     shared_by = SimpleUserSerializer(read_only=True)
+    likes_count = serializers.SerializerMethodField()
+    user_has_liked = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.SharedTask
-        fields = ["id", "task", "shared_by", "description", "created_at"]
+        fields = [
+            "id",
+            "task",
+            "shared_by",
+            "description",
+            "likes_count",
+            "user_has_liked",
+            "comments_count",
+            "created_at",
+        ]
         read_only_fields = ["id", "shared_by", "created_at"]
+
+    def get_likes_count(self, obj):
+        return obj.likes.count()
+
+    def get_user_has_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return ms.LikeSharedTask.objects.filter(user=request.user, shared_task=obj).exists()
+        return False
+
+    def get_comments_count(self, obj):
+        parent_comments = obj.comments.filter(parent__isnull=True)
+        total = 0
+        for comment in parent_comments:
+            total += self._count_nested_comments(comment)
+        return total
+
+    def _count_nested_comments(self, comment):
+        count = 1
+        for child in comment.replies.all():
+            count += self._count_nested_comments(child)
+        return count
 
     def create(self, validated_data):
         validated_data["shared_by"] = self.context["request"].user
@@ -354,3 +408,100 @@ class PosttSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return ms.LikePostt.objects.filter(user=request.user, post=obj).exists()
         return False
+
+
+# ============================================================================
+# SERIALIZERS PARA COMENTARIOS Y LIKES DE TAREAS COMPARTIDAS
+# ============================================================================
+
+class RecursiveSharedCommentSerializer(serializers.Serializer):
+    """Serializer recursivo para comentarios anidados de tareas compartidas"""
+    def to_representation(self, value):
+        serializer = SharedTaskCommentSerializer(value, context=self.context)
+        return serializer.data
+
+
+class SharedTaskCommentSerializer(serializers.ModelSerializer):
+    created_by = SimpleUserSerializer(read_only=True)
+    children = RecursiveSharedCommentSerializer(source='replies', many=True, read_only=True)
+    likes_count = serializers.SerializerMethodField()
+    user_has_liked = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ms.SharedTaskComment
+        fields = [
+            "id",
+            "created_by",
+            "parent",
+            "shared_task",
+            "text",
+            "children",
+            "likes_count",
+            "user_has_liked",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "shared_task"]
+
+    def get_likes_count(self, obj):
+        return obj.likes.count()
+
+    def get_user_has_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return ms.LikeSharedTaskComment.objects.filter(user=request.user, comment=obj).exists()
+        return False
+
+
+class SharedTaskDetailSerializer(serializers.ModelSerializer):
+    """Serializer extendido para tareas compartidas con comentarios y likes"""
+    task = TaskSerializer(read_only=True)
+    shared_by = SimpleUserSerializer(read_only=True)
+    comments = serializers.SerializerMethodField()
+    likes_count = serializers.SerializerMethodField()
+    user_has_liked = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ms.SharedTask
+        fields = [
+            "id",
+            "task",
+            "shared_by",
+            "description",
+            "comments",
+            "likes_count",
+            "user_has_liked",
+            "comments_count",
+            "created_at",
+        ]
+        read_only_fields = ["id", "shared_by", "created_at"]
+
+    def get_comments(self, obj):
+        """Retorna solo comentarios padre (nivel raíz)"""
+        parent_comments = obj.comments.filter(parent__isnull=True)
+        return SharedTaskCommentSerializer(parent_comments, many=True, context=self.context).data
+
+    def get_likes_count(self, obj):
+        return obj.likes.count()
+
+    def get_user_has_liked(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return ms.LikeSharedTask.objects.filter(user=request.user, shared_task=obj).exists()
+        return False
+
+    def _count_nested_comments(self, comment):
+        """Cuenta comentarios anidados recursivamente"""
+        count = 1
+        for child in comment.replies.all():
+            count += self._count_nested_comments(child)
+        return count
+
+    def get_comments_count(self, obj):
+        """Retorna el conteo total de comentarios (incluyendo anidados)"""
+        parent_comments = obj.comments.filter(parent__isnull=True)
+        total = 0
+        for comment in parent_comments:
+            total += self._count_nested_comments(comment)
+        return total

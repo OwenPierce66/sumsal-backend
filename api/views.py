@@ -20,7 +20,9 @@ from .serializers import (
     CategoryPSerializer,
     TaskSerializer,
     SharedTaskSerializer,
+    SharedTaskDetailSerializer,
     NewPeticionCommentSerializer,
+    SharedTaskCommentSerializer,
     FavoritoSerializer,
     PortadaSerializer,
     ImagenFijaSerializer,
@@ -196,6 +198,7 @@ class TaskCommentListCreateView(generics.ListCreateAPIView):
     serializer_class = NewPeticionCommentSerializer
     permission_classes = [IsAuthenticated]
     pagination_class = CommentPagination
+    parser_classes = [JSONParser, MultiPartParser, FormParser] # ⚡ Soportar tanto JSON como FormData
 
     def get_queryset(self):
         task_id = self.kwargs.get("task_id")
@@ -213,6 +216,7 @@ class NewPeticionCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = NewPeticionCommentSerializer
     permission_classes = [IsAuthenticated]
     lookup_url_kwarg = "comment_id" # Django buscará el <int:comment_id> de la URL
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def perform_destroy(self, instance):
         # 🛡️ SEGURIDAD: Solo el creador del comentario (o un admin) puede borrarlo
@@ -251,25 +255,37 @@ def users_who_shared_task(request, task_id):
     serializer = SimpleUserSerializer(users, many=True, context={"request": request})
     return Response(serializer.data)
 
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def create_shared_task(request):
-    task = get_object_or_404(ms.Task, id=request.data.get("task_id"))
-    shared, created = ms.SharedTask.objects.get_or_create(
-        task=task, shared_by=request.user, 
-        defaults={'description': request.data.get('description', '')}
-    )
-    if not created: return Response({"detail": "Ya compartido"}, status=400)
-    task.share_count += 1
-    task.save()
-    return Response(SharedTaskSerializer(shared, context={'request': request}).data, status=201)
+class SharedTaskListCreateView(generics.ListCreateAPIView):
+    """Lista tareas compartidas y permite crear nuevas compartidas."""
+    queryset = ms.SharedTask.objects.all()
+    serializer_class = SharedTaskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardPagination
 
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def delete_shared_task(request, shared_task_id):
-    shared = get_object_or_404(ms.SharedTask, id=shared_task_id, shared_by=request.user)
-    shared.delete()
-    return Response(status=204)
+    def get_queryset(self):
+        return (
+            super()
+            .get_queryset()
+            .select_related("task", "shared_by")
+            .prefetch_related("likes", "comments")
+        )
+
+    def create(self, request, *args, **kwargs):
+        task = get_object_or_404(ms.Task, id=request.data.get("task_id"))
+        shared, created = ms.SharedTask.objects.get_or_create(
+            task=task,
+            shared_by=request.user,
+            defaults={"description": request.data.get("description", "")},
+        )
+        if not created:
+            return Response({"detail": "Ya compartido"}, status=400)
+
+        task.share_count += 1
+        task.save()
+
+        serializer = self.get_serializer(shared)
+        return Response(serializer.data, status=201)
+
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -523,3 +539,128 @@ def toggle_post_like(request, post_id):
         like.delete()
         return Response({"liked": False, "likes_count": post.likes.count()})
     return Response({"liked": True, "likes_count": post.likes.count()}, status=201)
+
+
+# ============================================================================
+# COMENTARIOS Y LIKES PARA TAREAS COMPARTIDAS
+# ============================================================================
+
+class SharedTaskDetailView(generics.RetrieveAPIView):
+    """Obtiene el detalle de una tarea compartida con comentarios"""
+class SharedTaskDetailView(generics.RetrieveDestroyAPIView):
+    """Obtiene el detalle de una tarea compartida con comentarios o la elimina"""
+    queryset = ms.SharedTask.objects.all()
+    serializer_class = SharedTaskDetailSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        return super().get_queryset().select_related("task", "shared_by").prefetch_related("comments", "likes")
+
+    def perform_destroy(self, instance):
+        if instance.shared_by != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para eliminar esta publicación compartida.")
+        instance.delete()
+
+
+class SharedTaskCommentListCreateView(generics.ListCreateAPIView):
+    """Lista comentarios padre de una tarea compartida y permite crear nuevos"""
+    serializer_class = SharedTaskCommentSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = CommentPagination
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def get_queryset(self):
+        shared_task_id = self.kwargs.get("shared_task_id")
+        return ms.SharedTaskComment.objects.filter(
+            shared_task_id=shared_task_id, parent__isnull=True
+        ).select_related("created_by__profile").prefetch_related("replies", "likes")
+
+    def perform_create(self, serializer):
+        shared_task_id = self.kwargs.get("shared_task_id")
+        
+        # 1. Guardar el comentario en la Tarea Compartida
+        shared_comment = serializer.save(created_by=self.request.user, shared_task_id=shared_task_id)
+        
+        # 2. ⚡ SINCRONIZAR ("Como la función de likes"): Replicarlo en la tarea original
+        shared_task = get_object_or_404(ms.SharedTask, id=shared_task_id)
+        
+        ms.NewPeticionCommentPost.objects.create(
+            post=shared_task.task,
+            created_by=self.request.user,
+            text=shared_comment.text
+        )
+
+
+class SharedTaskCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
+    """Obtiene, actualiza o elimina un comentario específico de tarea compartida"""
+    queryset = ms.SharedTaskComment.objects.all()
+    serializer_class = SharedTaskCommentSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_url_kwarg = "comment_id"
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def perform_destroy(self, instance):
+        if instance.created_by != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para eliminar este comentario.")
+            
+        # ⚡ Borrar también el clon en la tarea original si el usuario decide eliminar su comentario
+        cloned = ms.NewPeticionCommentPost.objects.filter(
+            post=instance.shared_task.task,
+            created_by=instance.created_by,
+            text=instance.text
+        ).first()
+        
+        if cloned:
+            cloned.delete()
+            
+        instance.delete()
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_shared_task_like(request, shared_task_id):
+    """Da o quita like a una tarea compartida y sincroniza el like con la tarea original."""
+    shared_task = get_object_or_404(ms.SharedTask, id=shared_task_id)
+
+    like_shared, created_shared = ms.LikeSharedTask.objects.get_or_create(
+        user=request.user,
+        shared_task=shared_task,
+    )
+
+    if not created_shared:
+        like_shared.delete()
+        ms.Like.objects.filter(user=request.user, task=shared_task.task).delete()
+        liked = False
+    else:
+        ms.Like.objects.get_or_create(user=request.user, task=shared_task.task)
+        liked = True
+
+    return Response({
+        "liked": liked,
+        "likes_count_shared": shared_task.likes.count(),
+        "likes_count_original": shared_task.task.likes.count(),
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_shared_task_comment_like(request, shared_task_id, comment_id):
+    """Da o quita like a un comentario de tarea compartida"""
+    comment = get_object_or_404(ms.SharedTaskComment, id=comment_id, shared_task_id=shared_task_id)
+    
+    like, created = ms.LikeSharedTaskComment.objects.get_or_create(
+        user=request.user, comment=comment
+    )
+    
+    if not created:
+        like.delete()
+        return Response({
+            "liked": False,
+            "likes_count": comment.likes.count()
+        })
+    
+    return Response({
+        "liked": True,
+        "likes_count": comment.likes.count()
+    }, status=201)

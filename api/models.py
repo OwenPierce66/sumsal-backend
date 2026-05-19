@@ -212,6 +212,39 @@ class LikeCommentPost(TimeStampedModel):
 
 
 # ============================================================================
+# COMENTARIOS Y LIKES PARA TAREAS COMPARTIDAS
+# ============================================================================
+
+class SharedTaskComment(TimeStampedModel):
+    """Comentarios anidados para tareas compartidas"""
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shared_task_comments")
+    parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="replies")
+    shared_task = models.ForeignKey(SharedTask, on_delete=models.CASCADE, related_name="comments")
+    text = models.TextField(_("comment text"))
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class LikeSharedTaskComment(TimeStampedModel):
+    """Likes para comentarios de tareas compartidas"""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shared_task_comment_likes")
+    comment = models.ForeignKey(SharedTaskComment, on_delete=models.CASCADE, related_name="likes")
+
+    class Meta:
+        unique_together = ("user", "comment")
+
+
+class LikeSharedTask(TimeStampedModel):
+    """Likes para tareas compartidas (independiente del like de la tarea original)"""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shared_task_likes")
+    shared_task = models.ForeignKey(SharedTask, on_delete=models.CASCADE, related_name="likes")
+
+    class Meta:
+        unique_together = ("user", "shared_task")
+
+
+# ============================================================================
 # IMÁGENES Y OTROS
 # ============================================================================
 
