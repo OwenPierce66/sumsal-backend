@@ -189,9 +189,21 @@ def toggle_task_like(request, task_id):
 def toggle_comment_like(request, comment_id):
     comment = get_object_or_404(ms.NewPeticionCommentPost, id=comment_id)
     like, created = ms.LikeCommentPost.objects.get_or_create(user=request.user, comment=comment)
+    
+    # ⚡ Sincronizar: Likear también los posibles clones en las tareas compartidas
+    shared_clones = ms.SharedTaskComment.objects.filter(
+        shared_task__task=comment.post, created_by=comment.created_by, text=comment.text
+    )
+    
     if not created:
         like.delete()
+        for sc in shared_clones:
+            ms.LikeSharedTaskComment.objects.filter(user=request.user, comment=sc).delete()
         return Response({"liked": False, "likes_count": comment.likes.count()})
+        
+    for sc in shared_clones:
+        ms.LikeSharedTaskComment.objects.get_or_create(user=request.user, comment=sc)
+        
     return Response({"liked": True, "likes_count": comment.likes.count()}, status=201)
 
 class TaskCommentListCreateView(generics.ListCreateAPIView):
@@ -208,7 +220,23 @@ class TaskCommentListCreateView(generics.ListCreateAPIView):
         ).select_related("created_by__profile").prefetch_related("replies", "likes")
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user, post_id=self.kwargs.get("task_id"))
+        task_id = self.kwargs.get("task_id")
+        original_comment = serializer.save(created_by=self.request.user, post_id=task_id)
+
+        # ⚡ SINCRONIZAR BIDIRECCIONAL: Replicar respuesta en la tarea compartida si el padre es un clon
+        if original_comment.parent:
+            shared_clones = ms.SharedTaskComment.objects.filter(
+                shared_task__task_id=task_id,
+                created_by=original_comment.parent.created_by,
+                text=original_comment.parent.text
+            )
+            for sc in shared_clones:
+                ms.SharedTaskComment.objects.create(
+                    shared_task=sc.shared_task,
+                    created_by=self.request.user,
+                    text=original_comment.text,
+                    parent=sc
+                )
 
 
 class NewPeticionCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
@@ -222,6 +250,14 @@ class NewPeticionCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
         # 🛡️ SEGURIDAD: Solo el creador del comentario (o un admin) puede borrarlo
         if instance.created_by != self.request.user and not self.request.user.is_staff:
             raise PermissionDenied("No tienes permiso para eliminar este comentario.")
+            
+        # ⚡ Sincronizar: borrar clones en tareas compartidas si borran de la original
+        ms.SharedTaskComment.objects.filter(
+            shared_task__task=instance.post,
+            created_by=instance.created_by,
+            text=instance.text
+        ).delete()
+        
         instance.delete()
         
 
@@ -585,10 +621,20 @@ class SharedTaskCommentListCreateView(generics.ListCreateAPIView):
         # 2. ⚡ SINCRONIZAR ("Como la función de likes"): Replicarlo en la tarea original
         shared_task = get_object_or_404(ms.SharedTask, id=shared_task_id)
         
+        # ⚡ Respetar el ANIDADO buscando a su equivalente padre
+        original_parent = None
+        if shared_comment.parent:
+            original_parent = ms.NewPeticionCommentPost.objects.filter(
+                post=shared_task.task,
+                created_by=shared_comment.parent.created_by,
+                text=shared_comment.parent.text
+            ).first()
+            
         ms.NewPeticionCommentPost.objects.create(
             post=shared_task.task,
             created_by=self.request.user,
-            text=shared_comment.text
+            text=shared_comment.text,
+            parent=original_parent
         )
 
 
@@ -605,14 +651,11 @@ class SharedTaskCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
             raise PermissionDenied("No tienes permiso para eliminar este comentario.")
             
         # ⚡ Borrar también el clon en la tarea original si el usuario decide eliminar su comentario
-        cloned = ms.NewPeticionCommentPost.objects.filter(
+        ms.NewPeticionCommentPost.objects.filter(
             post=instance.shared_task.task,
             created_by=instance.created_by,
             text=instance.text
-        ).first()
-        
-        if cloned:
-            cloned.delete()
+        ).delete()
             
         instance.delete()
 
@@ -653,12 +696,22 @@ def toggle_shared_task_comment_like(request, shared_task_id, comment_id):
         user=request.user, comment=comment
     )
     
+    # ⚡ Sincronizar: Likear el clon original
+    original_clone = ms.NewPeticionCommentPost.objects.filter(
+        post=comment.shared_task.task, created_by=comment.created_by, text=comment.text
+    ).first()
+    
     if not created:
         like.delete()
+        if original_clone:
+            ms.LikeCommentPost.objects.filter(user=request.user, comment=original_clone).delete()
         return Response({
             "liked": False,
             "likes_count": comment.likes.count()
         })
+        
+    if original_clone:
+        ms.LikeCommentPost.objects.get_or_create(user=request.user, comment=original_clone)
     
     return Response({
         "liked": True,
