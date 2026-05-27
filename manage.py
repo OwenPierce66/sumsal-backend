@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 env_path = Path(__file__).resolve().parent / ".env"
-load_dotenv(env_path)
+load_dotenv(env_path, override=True)
 
 
 def main():

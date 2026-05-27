@@ -34,7 +34,7 @@ urlpatterns = [
 
 urlpatterns += i18n_patterns(
     path("admin/", admin.site.urls),
-    prefix_default_language=True,
+    prefix_default_language=False,
 )
 
 if settings.DEBUG:
