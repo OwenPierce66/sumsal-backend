@@ -37,10 +37,19 @@ User = get_user_model()
 # CONFIGURACIÓN DE PAGINACIÓN
 # ============================================================================
 
+from rest_framework.exceptions import NotFound
+
 class StandardPagination(PageNumberPagination):
     page_size = 10
     page_size_query_param = "page_size"
     max_page_size = 100
+
+    def paginate_queryset(self, queryset, request, view=None):
+        try:
+            return super().paginate_queryset(queryset, request, view=view)
+        except NotFound:
+            # Gracefully handle the error by returning an empty list instead of throwing 404
+            return []
 
 class CommentPagination(LimitOffsetPagination):
     default_limit = 10
@@ -71,6 +80,14 @@ class UserMeView(APIView):
     def get(self, request):
         serializer = UserSerializer(request.user, context={'request': request})
         return Response(serializer.data)
+
+class UserMyTasksView(generics.ListAPIView):
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        return ms.Task.objects.filter(user=self.request.user).order_by('-created_at')
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -279,6 +296,30 @@ def like_unlike_profile(request, profile_id):
 @permission_classes([AllowAny])
 def users_who_liked_task(request, task_id):
     likes = ms.Like.objects.filter(task_id=task_id).select_related("user__profile")
+    users = [like.user for like in likes if like.user]
+    serializer = SimpleUserSerializer(users, many=True, context={"request": request})
+    return Response(serializer.data)
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def users_who_liked_comment(request, comment_id):
+    likes = ms.LikeCommentPost.objects.filter(comment_id=comment_id).select_related("user__profile")
+    users = [like.user for like in likes if like.user]
+    serializer = SimpleUserSerializer(users, many=True, context={"request": request})
+    return Response(serializer.data)
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def users_who_liked_shared_task(request, shared_task_id):
+    likes = ms.LikeSharedTask.objects.filter(shared_task_id=shared_task_id).select_related("user__profile")
+    users = [like.user for like in likes if like.user]
+    serializer = SimpleUserSerializer(users, many=True, context={"request": request})
+    return Response(serializer.data)
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def users_who_liked_shared_comment(request, comment_id):
+    likes = ms.LikeSharedTaskComment.objects.filter(comment_id=comment_id).select_related("user__profile")
     users = [like.user for like in likes if like.user]
     serializer = SimpleUserSerializer(users, many=True, context={"request": request})
     return Response(serializer.data)

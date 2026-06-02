@@ -21,9 +21,9 @@ urlpatterns = [
         name="token_refresh",
     ),
     path("users/me/", vs.UserMeView.as_view(), name="user-me"),
-    
-    # ========== USUARIOS (Uso de UUID para seguridad) ==========
-    path("users/", vs.list_users, name="list-users"),
+    path("users/me/tasks/", vs.UserMyTasksView.as_view(), name="user-my-tasks"),
+
+    # ========== USUARIOS (Uso de UUID para seguridad) ==========    path("users/", vs.list_users, name="list-users"),
     path("users/<uuid:user_id>/portadas/", vs.obtener_portadas_usuario, name="user-portadas"),
     path("users/<uuid:user_id>/imagen-fija/", vs.obtener_imagen_fija_usuario, name="user-imagen-fija"),
     path("user-details/", vs.get_user_details, name="user-details"),
@@ -42,10 +42,13 @@ urlpatterns = [
     path("tasks/<int:task_id>/comments/<int:comment_id>/", vs.NewPeticionCommentDetailsView.as_view(), name="task-comment-detail"),
     
     path("comments/<int:comment_id>/like/", vs.toggle_comment_like, name="comment-like"),
+    path("comments/<int:comment_id>/users-who-liked/", vs.users_who_liked_comment, name="comment-users-who-liked"),
     
     # ========== SOCIAL Y COMPARTIR ==========
     path("shared-tasks/", vs.SharedTaskListCreateView.as_view(), name="shared-task-list-create"),
     path("tasks/<int:task_id>/users-who-shared/", vs.users_who_shared_task, name="users-who-shared"),
+    path("shared-tasks/<int:shared_task_id>/users-who-liked/", vs.users_who_liked_shared_task, name="shared-task-users-who-liked"),
+    path("shared-tasks/comments/<int:comment_id>/users-who-liked/", vs.users_who_liked_shared_comment, name="shared-task-comment-users-who-liked"),
     
     # ========== FAVORITOS (Tareas y Perfiles) ==========
     path("favoritos/agregar/", vs.agregar_favorito, name="agregar-favorito"),

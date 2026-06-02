@@ -62,7 +62,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     # Temporarily disabled for migration
     # "forum",
-    # "massaging", 
+    "massaging", 
     # "newforum",
     # "newpeticiones",
 ]
@@ -245,7 +245,7 @@ if DEBUG:
         "http://localhost:8001",
     ]
 
-    print(f"🚀🖤 React native api url🖤: http://{IP_ADDR}:8001/api/")
+    print(f"React native api url: http://{IP_ADDR}:8001/api/")
 
     DEBUG_TOOLBAR_CONFIG = {
         "SHOW_TOOLBAR_CALLBACK": lambda request: True,

@@ -7,7 +7,7 @@ from django.utils.translation import gettext_lazy as _
 
 # Importar storages del código antiguo
 try:
-    from backend.storage_backends import ImagenText, VideoStorage
+    from Sumsal_Backend.storage_backends import ImagenText, VideoStorage
 except ImportError:
     # Fallback si no existe
     from django.core.files.storage import default_storage

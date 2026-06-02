@@ -27,7 +27,7 @@ urlpatterns = [
     # Temporarily disabled for migration
     # path("forum/", include("forum.urls")),
     # path("newforum/", include("newforum.urls")),
-    # path("massaging/", include("massaging.urls")),
+    path("api/massaging/", include("massaging.urls")),
     # path("newpeticiones/", include("newpeticiones.urls")),
     path("i18n/", include("django.conf.urls.i18n")),
 ]
