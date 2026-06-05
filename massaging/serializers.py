@@ -185,9 +185,20 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class GroupSerializer(serializers.ModelSerializer):
+    members = serializers.SerializerMethodField()
+
     class Meta:
         model = Group
-        fields = ["id", "name", "created_at", "created_by"]
+        fields = ["id", "name", "created_at", "created_by", "members"]
+
+    def get_members(self, obj):
+        memberships = GroupMembership.objects.filter(group=obj).select_related('user')
+        data = []
+        for m in memberships:
+            user_data = UserSerializer(m.user, context=self.context).data
+            user_data['is_admin'] = m.is_admin
+            data.append(user_data)
+        return data
 
 
 class GroupMembershipSerializer(serializers.ModelSerializer):

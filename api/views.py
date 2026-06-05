@@ -49,7 +49,18 @@ class StandardPagination(PageNumberPagination):
             return super().paginate_queryset(queryset, request, view=view)
         except NotFound:
             # Gracefully handle the error by returning an empty list instead of throwing 404
+            self.request = request
             return []
+
+    def get_paginated_response(self, data):
+        if not hasattr(self, 'page') or self.page is None:
+            return Response({
+                'count': 0,
+                'next': None,
+                'previous': None,
+                'results': data
+            })
+        return super().get_paginated_response(data)
 
 class CommentPagination(LimitOffsetPagination):
     default_limit = 10
@@ -108,14 +119,33 @@ class TaskListCreateView(generics.ListCreateAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
+        from django.utils import timezone
+        from datetime import timedelta
+        
         qs = super().get_queryset()
         pch = self.request.query_params.get("pch")
-        if pch: 
+        user_id = self.request.query_params.get("user_id")
+        date_filter = self.request.query_params.get("date_filter")
+        category = self.request.query_params.get("category")
+        
+        if pch:
             qs = qs.filter(pch=pch)
+        if user_id:
+            qs = qs.filter(user_id=user_id)
+            
+        if date_filter == "hoy":
+            qs = qs.filter(created_at__date=timezone.now().date())
+        elif date_filter == "esta_semana":
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=7))
+        elif date_filter == "este_mes":
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=30))
+            
+        if category:
+            qs = qs.filter(categories__icontains=category)
+            
         return qs.select_related("user").prefetch_related(
             "likes", "comments", "subtasks", "subfuentes", "subfactores"
         ).order_by('-created_at')
-
     def post(self, request, *args, **kwargs):
         print("====== LLAVES RECIBIDAS DESDE REACT NATIVE ======")
         print(request.data.keys())

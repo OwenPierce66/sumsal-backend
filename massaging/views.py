@@ -104,10 +104,12 @@ class UnifiedConversationsView(APIView):
 
             existing = conversations_map.get(key)
             if existing is None or existing["last_timestamp"] < msg.timestamp:
+                other_image = UserSerializer(other, context={'request': request}).data.get('image')
                 conversations_map[key] = {
                     "id": other.id,
                     "type": "direct",
                     "title": other.username,
+                    "image": other_image,
                     "last_message": msg.content or "",
                     "last_timestamp": msg.timestamp,  # datetime
                 }
