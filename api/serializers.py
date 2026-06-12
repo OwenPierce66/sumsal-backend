@@ -119,6 +119,7 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     user_image = serializers.SerializerMethodField()
     has_liked = serializers.SerializerMethodField()
+    is_favorited = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -132,7 +133,14 @@ class SimpleUserSerializer(serializers.ModelSerializer):
             "likes_count",
             "user_image",
             "has_liked",
+            "is_favorited",
         ]
+
+    def get_is_favorited(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return ms.pFavorito.objects.filter(user=request.user, perfil=obj).exists()
+        return False
 
     def get_likes_count(self, obj):
         return ms.LikeP.objects.filter(profile=obj).count()
@@ -268,11 +276,18 @@ class TaskSerializer(serializers.ModelSerializer):
     subtasks = SubTaskSerializer(many=True, read_only=True)
     subfactores = SubFactoresSerializer(many=True, read_only=True)
     subfuentes = SubFuentesSerializer(many=True, read_only=True)
+    is_favorited = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
         fields = '__all__'
         read_only_fields = ["id", "user", "share_count", "created_at"]
+
+    def get_is_favorited(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return ms.Favorito.objects.filter(user=request.user, task=obj).exists()
+        return False
 
     def _count_nested_comments(self, comment):
         """Cuenta un comentario y todas sus respuestas recursivamente"""

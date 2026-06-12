@@ -121,20 +121,28 @@ class TaskListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         from django.utils import timezone
         from datetime import timedelta
+        from django.db.models import Count
         
         qs = super().get_queryset()
         pch = self.request.query_params.get("pch")
         user_id = self.request.query_params.get("user_id")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
+        sort_by = self.request.query_params.get("sort_by")
+        favorites_only = self.request.query_params.get("favorites_only")
+        favorite_users_only = self.request.query_params.get("favorite_users_only")
+        verified_users_only = self.request.query_params.get("verified_users_only")
+        recommended_users_only = self.request.query_params.get("recommended_users_only")
+        verified_users_only = self.request.query_params.get("verified_users_only")
+        recommended_users_only = self.request.query_params.get("recommended_users_only")
         
         if pch:
             qs = qs.filter(pch=pch)
-        if user_id:
+        if user_id and favorites_only not in ["true", "1", "True", True]:
             qs = qs.filter(user_id=user_id)
             
         if date_filter == "hoy":
-            qs = qs.filter(created_at__date=timezone.now().date())
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=1))
         elif date_filter == "esta_semana":
             qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=7))
         elif date_filter == "este_mes":
@@ -143,9 +151,31 @@ class TaskListCreateView(generics.ListCreateAPIView):
         if category:
             qs = qs.filter(categories__icontains=category)
             
-        return qs.select_related("user").prefetch_related(
+        if favorites_only in ['true', '1', 'True', True]:
+            if user_id:
+                qs = qs.filter(favorited_by__user_id=user_id)
+            else:
+                qs = qs.filter(favorited_by__user=self.request.user)
+
+        if favorite_users_only in ['true', '1', 'True', True]:
+            qs = qs.filter(user__profile_favorites_received__user=self.request.user)
+            
+        if verified_users_only in ['true', '1', 'True', True]:
+            qs = qs.filter(user__profile__is_verified=True)
+            
+        if recommended_users_only in ['true', '1', 'True', True]:
+            qs = qs.filter(user__profile__is_recommended=True)
+            
+        qs = qs.select_related("user").prefetch_related(
             "likes", "comments", "subtasks", "subfuentes", "subfactores"
-        ).order_by('-created_at')
+        )
+        
+        if sort_by == "likes":
+            qs = qs.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
+        else:
+            qs = qs.order_by('-created_at')
+            
+        return qs
     def post(self, request, *args, **kwargs):
         print("====== LLAVES RECIBIDAS DESDE REACT NATIVE ======")
         print(request.data.keys())
@@ -370,12 +400,49 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
-        return (
-            super()
-            .get_queryset()
-            .select_related("task", "shared_by")
-            .prefetch_related("likes", "comments")
-        )
+        from django.utils import timezone
+        from datetime import timedelta
+        from django.db.models import Count
+        
+        qs = super().get_queryset()
+        date_filter = self.request.query_params.get("date_filter")
+        category = self.request.query_params.get("category")
+        sort_by = self.request.query_params.get("sort_by")
+        favorites_only = self.request.query_params.get("favorites_only")
+        favorite_users_only = self.request.query_params.get("favorite_users_only")
+        verified_users_only = self.request.query_params.get("verified_users_only")
+        recommended_users_only = self.request.query_params.get("recommended_users_only")
+        
+        if date_filter == "hoy":
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=1))
+        elif date_filter == "esta_semana":
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=7))
+        elif date_filter == "este_mes":
+            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=30))
+            
+        if category:
+            qs = qs.filter(task__categories__icontains=category)
+            
+        if favorites_only in ['true', '1', 'True', True]:
+            qs = qs.filter(task__favorited_by__user=self.request.user)
+
+        if favorite_users_only in ['true', '1', 'True', True]:
+            qs = qs.filter(shared_by__profile_favorites_received__user=self.request.user) | qs.filter(task__user__profile_favorites_received__user=self.request.user)
+
+        if verified_users_only in ['true', '1', 'True', True]:
+            qs = qs.filter(shared_by__profile__is_verified=True) | qs.filter(task__user__profile__is_verified=True)
+
+        if recommended_users_only in ['true', '1', 'True', True]:
+            qs = qs.filter(shared_by__profile__is_recommended=True) | qs.filter(task__user__profile__is_recommended=True)
+            
+        qs = qs.select_related("task", "shared_by").prefetch_related("likes", "comments")
+        
+        if sort_by == "likes":
+            qs = qs.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
+        else:
+            qs = qs.order_by('-created_at')
+            
+        return qs
 
     def create(self, request, *args, **kwargs):
         task = get_object_or_404(ms.Task, id=request.data.get("task_id"))
