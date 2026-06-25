@@ -69,3 +69,5 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 USER appuser
 
 ENTRYPOINT ["/app/entrypoint.sh"]
+
+CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
