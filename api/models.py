@@ -156,7 +156,7 @@ class Like(TimeStampedModel):
 class LikeP(models.Model):
     """Likes entre perfiles"""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="likes_given")
-    profile = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="likes_received")
+    profile = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name="likes")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -175,7 +175,7 @@ class Favorito(models.Model):
 class pFavorito(models.Model):
     """Favoritos de perfiles"""
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_favorites_given")
-    perfil = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_favorites_received")
+    perfil = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name="profile_favorites_received")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

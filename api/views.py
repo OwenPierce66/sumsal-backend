@@ -341,19 +341,28 @@ class NewPeticionCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def like_unlike_profile(request, profile_id):
-    profile_user = get_object_or_404(User, id=profile_id)
-    like, created = ms.LikeP.objects.get_or_create(user=request.user, profile=profile_user)
+    """
+    Da o quita like a un perfil.
+    Devuelve el estado final del like y el nuevo contador total.
+    """
+    target_profile = get_object_or_404(ms.Profile, id=profile_id)
+    like, created = ms.LikeP.objects.get_or_create(user=request.user, profile=target_profile)
+
     if not created:
         like.delete()
-        return Response({"status": "removed"})
-    return Response({"status": "added", "likes_count": ms.LikeP.objects.filter(profile=profile_user).count()})
+        liked = False
+    else:
+        liked = True
+
+    # Devolvemos el estado final y el nuevo contador
+    likes_count = target_profile.likes.count()
+    return Response({'liked': liked, 'likes_count': likes_count}, status=status.HTTP_200_OK)
 
 # ============================================================================
 # FUNCIONES DE COMPATIBILIDAD URLS
 # ============================================================================
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
 def users_who_liked_task(request, task_id):
     likes = ms.Like.objects.filter(task_id=task_id).select_related("user__profile")
     users = [like.user for like in likes if like.user]
@@ -481,7 +490,7 @@ def listar_favoritos(request, user_id=None):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def agregar_pfavorito(request):
-    perfil = get_object_or_404(User, id=request.data.get("perfil_id"))
+    perfil = get_object_or_404(ms.Profile, id=request.data.get("perfil_id"))
     fav, created = ms.pFavorito.objects.get_or_create(user=request.user, perfil=perfil)
     if not created:
         fav.delete()
@@ -500,9 +509,20 @@ def listar_pfavoritos(request, user_id=None):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_likes(request, profile_id):
-    likes = ms.LikeP.objects.filter(profile_id=profile_id).select_related("user__profile")
-    users = [l.user for l in likes]
-    return Response(SimpleUserSerializer(users, many=True, context={'request': request}).data)
+    """
+    Lista todos los usuarios que han dado like a un perfil específico.
+    Incluye un campo 'viewer_has_liked' para el usuario que hace la petición.
+    """
+    profile = get_object_or_404(ms.Profile, id=profile_id)
+    likes = profile.likes.all()
+    users = [like.user for like in likes if like.user]
+    serializer = SimpleUserSerializer(users, many=True, context={'request': request})
+
+    viewer_has_liked = False
+    if request.user.is_authenticated:
+        viewer_has_liked = ms.LikeP.objects.filter(user=request.user, profile=profile).exists()
+
+    return Response({ 'results': serializer.data, 'viewer_has_liked': viewer_has_liked })
 
 @api_view(["GET", "POST", "DELETE"])
 @permission_classes([IsAuthenticated])

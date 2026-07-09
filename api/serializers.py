@@ -139,11 +139,16 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     def get_is_favorited(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return ms.pFavorito.objects.filter(user=request.user, perfil=obj).exists()
+            # ✅ FIX: `pFavorito` se relaciona con `Profile`, no con `User`.
+            if hasattr(obj, 'profile'):
+                return ms.pFavorito.objects.filter(user=request.user, perfil=obj.profile).exists()
         return False
 
     def get_likes_count(self, obj):
-        return ms.LikeP.objects.filter(profile=obj).count()
+        # ✅ FIX: `LikeP` se relaciona con `Profile`, no con `User`.
+        if hasattr(obj, 'profile'):
+            return ms.LikeP.objects.filter(profile=obj.profile).count()
+        return 0
 
     def get_user_image(self, obj):
         imagen_fija = ms.ImagenFija.objects.filter(user=obj).last()
@@ -155,7 +160,9 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     def get_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return ms.LikeP.objects.filter(user=request.user, profile=obj).exists()
+            # ✅ FIX: `LikeP` se relaciona con `Profile`, no con `User`.
+            if hasattr(obj, 'profile'):
+                return ms.LikeP.objects.filter(user=request.user, profile=obj.profile).exists()
         return False
 
 
