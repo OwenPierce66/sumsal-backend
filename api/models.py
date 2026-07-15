@@ -118,6 +118,9 @@ class CategoryP(models.Model):
 
 class Task(TimeStampedModel):
     """Modelo principal de Peticiones/Recetas/Tareas"""
+    # Mantener la PK numérica para coincidir con el esquema actual de Postgres
+    # y evitar el error 500 producido por la comparación bigint = uuid.
+    id = models.BigAutoField(primary_key=True, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -173,9 +176,11 @@ class Favorito(models.Model):
 
 
 class pFavorito(models.Model):
-    """Favoritos de perfiles"""
+    """Favoritos de perfiles/usarios."""
+    # Mantener esta relación en User para coincidir con el esquema real de Postgres.
+    # El campo `perfil_id` en la base viva apunta a `api_user`, no a `api_profile`.
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_favorites_given")
-    perfil = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name="profile_favorites_received")
+    perfil = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_favorites_received")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

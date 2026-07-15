@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import sys
 import dj_database_url
 from pathlib import Path
 from datetime import timedelta
@@ -213,16 +214,17 @@ if DEBUG:
     install(show_locals=True)
     builtins.print = rprint
 
-    INSTALLED_APPS += [
-        "debug_toolbar",
-        "django_browser_reload",
-        "django_extensions",
-    ]
+    if "test" not in sys.argv:
+        INSTALLED_APPS += [
+            "debug_toolbar",
+            "django_browser_reload",
+            "django_extensions",
+        ]
 
-    MIDDLEWARE = [
-        "debug_toolbar.middleware.DebugToolbarMiddleware",
-        "django_browser_reload.middleware.BrowserReloadMiddleware",
-    ] + list(MIDDLEWARE)
+        MIDDLEWARE = [
+            "debug_toolbar.middleware.DebugToolbarMiddleware",
+            "django_browser_reload.middleware.BrowserReloadMiddleware",
+        ] + list(MIDDLEWARE)
 
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -248,7 +250,8 @@ if DEBUG:
     print(f"React native api url: http://{IP_ADDR}:8001/api/")
 
     DEBUG_TOOLBAR_CONFIG = {
-        "SHOW_TOOLBAR_CALLBACK": lambda request: True,
+        "SHOW_TOOLBAR_CALLBACK": lambda request: "test" not in sys.argv,
+        "IS_RUNNING_TESTS": "test" in sys.argv,
     }
 
     LOGGING = {

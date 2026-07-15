@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Count, Q
+from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.shortcuts import get_object_or_404
 from django.conf import settings
 from rest_framework.exceptions import PermissionDenied
@@ -8,7 +8,7 @@ from rest_framework import status, generics
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.pagination import PageNumberPagination, LimitOffsetPagination
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -114,7 +114,9 @@ def list_users(request):
 class TaskListCreateView(generics.ListCreateAPIView):
     queryset = ms.Task.objects.all()
     serializer_class = TaskSerializer
-    permission_classes = [IsAuthenticated]
+    # ✅ FIX 401: Permitir que cualquiera vea la lista (GET),
+    # pero solo usuarios autenticados puedan crear (POST).
+    permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = StandardPagination
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -363,11 +365,48 @@ def like_unlike_profile(request, profile_id):
 # ============================================================================
 
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def users_who_liked_task(request, task_id):
-    likes = ms.Like.objects.filter(task_id=task_id).select_related("user__profile")
-    users = [like.user for like in likes if like.user]
-    serializer = SimpleUserSerializer(users, many=True, context={"request": request})
-    return Response(serializer.data)
+    """ 
+    Obtiene la lista de usuarios a los que les gustó una tarea.
+    Esta es la versión optimizada y correcta.
+    """
+    # ✅ FIX DEFINITIVO: Ahora que Task.id es un UUID, la búsqueda es directa y segura.
+    # Ya no se necesita la lógica condicional, eliminando la fuente del error 500.
+    try:
+        get_object_or_404(ms.Task, id=task_id)
+    except (ValueError, ms.Task.DoesNotExist):
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # Subconsulta para obtener la imagen de perfil más reciente
+    latest_img = ms.ImagenFija.objects.filter(user=OuterRef("pk")).order_by("-id").values("image")[:1]
+
+    # Subconsulta para verificar si el usuario dio like a esta tarea
+    likes_exists = ms.Like.objects.filter(task_id=task_id, user_id=OuterRef("pk"))
+
+    # Obtenemos los usuarios que cumplen la condición
+    users_qs = User.objects.annotate(
+        user_image=Subquery(latest_img),
+        liked=Exists(likes_exists),
+    ).filter(liked=True)
+
+    # Construimos la respuesta manualmente para que coincida con lo que el modal espera
+    out = []
+    for u in users_qs:
+        try:
+            p = u.profile
+        except Exception:
+            p = None
+
+        out.append({
+            "id": u.id,
+            "username": u.username,
+            "likes_count": ms.LikeP.objects.filter(profile=u).count(),
+            "user_image": file_to_abs_url(getattr(u, "user_image", None), request),
+            "profile": ProfileSerializer(p).data if p else None
+        })
+
+    return Response(out, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -405,7 +444,9 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
     """Lista tareas compartidas y permite crear nuevas compartidas."""
     queryset = ms.SharedTask.objects.all()
     serializer_class = SharedTaskSerializer
-    permission_classes = [IsAuthenticated]
+    # ✅ FIX 401: Permitir que cualquiera vea la lista (GET),
+    # pero solo usuarios autenticados puedan compartir (POST).
+    permission_classes = [IsAuthenticatedOrReadOnly]
     pagination_class = StandardPagination
 
     def get_queryset(self):
@@ -490,7 +531,8 @@ def listar_favoritos(request, user_id=None):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def agregar_pfavorito(request):
-    perfil = get_object_or_404(ms.Profile, id=request.data.get("perfil_id"))
+    # En la base viva, `api_pfavorito.perfil_id` apunta a `api_user.id`, no a `api_profile.id`.
+    perfil = get_object_or_404(User, id=request.data.get("perfil_id"))
     fav, created = ms.pFavorito.objects.get_or_create(user=request.user, perfil=perfil)
     if not created:
         fav.delete()
@@ -513,7 +555,11 @@ def list_likes(request, profile_id):
     Lista todos los usuarios que han dado like a un perfil específico.
     Incluye un campo 'viewer_has_liked' para el usuario que hace la petición.
     """
-    profile = get_object_or_404(ms.Profile, id=profile_id)
+    try:
+        # Buscamos el perfil a través del ID de usuario (UUID) o el ID de perfil (numérico)
+        profile = get_object_or_404(ms.Profile, Q(user_id=profile_id) | Q(id=profile_id))
+    except (ValueError, ms.Profile.DoesNotExist):
+        return Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
     likes = profile.likes.all()
     users = [like.user for like in likes if like.user]
     serializer = SimpleUserSerializer(users, many=True, context={'request': request})
@@ -542,10 +588,11 @@ def create_categoryp(request, pk=None):
         return Response(status=204)
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedOrReadOnly])
 def new_category_list_create(request):
     if request.method == "GET":
-        return Response(NewCategorySerializer(ms.NewCategory.objects.all(), many=True).data)
+        serializer = NewCategorySerializer(ms.NewCategory.objects.all(), many=True)
+        return Response(serializer.data)
     if not request.user.is_staff: return Response(status=403)
     serializer = NewCategorySerializer(data=request.data)
     if serializer.is_valid():

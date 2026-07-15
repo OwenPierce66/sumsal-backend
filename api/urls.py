@@ -31,22 +31,23 @@ urlpatterns = [
     
     # ========== TAREAS / PETICIONES ==========
     path("tasks/", vs.TaskListCreateView.as_view(), name="task-list-create"),
-    path("tasks/<int:id>/", vs.TaskDetailView.as_view(), name="task-detail"),
-    path("tasks/<int:task_id>/like/", vs.toggle_task_like, name="task-like"),
-    path("tasks/<int:task_id>/users-who-liked/", vs.users_who_liked_task, name="users-who-liked"),
+    path("tasks/<str:id>/", vs.TaskDetailView.as_view(), name="task-detail"),
+    path("tasks/<str:task_id>/like/", vs.toggle_task_like, name="task-like"),
+    path("tasks/<str:task_id>/users-who-liked/", vs.users_who_liked_task, name="users-who-liked"),
     
     # ========== COMENTARIOS (Hilos anidados) ==========
-    path("tasks/<int:task_id>/comments/", vs.TaskCommentListCreateView.as_view(), name="task-comments"),
+    path("tasks/<str:task_id>/comments/", vs.TaskCommentListCreateView.as_view(), name="task-comments"),
     
     # ⚡ LA LÍNEA MÁGICA PARA BORRAR Y EDITAR COMENTARIOS
-    path("tasks/<int:task_id>/comments/<int:comment_id>/", vs.NewPeticionCommentDetailsView.as_view(), name="task-comment-detail"),
+    # ✅ FIX: Aceptar tanto IDs numéricos como UUIDs para compatibilidad con el estado real de la BD.
+    path("tasks/<str:task_id>/comments/<int:comment_id>/", vs.NewPeticionCommentDetailsView.as_view(), name="task-comment-detail"),
     
     path("comments/<int:comment_id>/like/", vs.toggle_comment_like, name="comment-like"),
     path("comments/<int:comment_id>/users-who-liked/", vs.users_who_liked_comment, name="comment-users-who-liked"),
     
     # ========== SOCIAL Y COMPARTIR ==========
     path("shared-tasks/", vs.SharedTaskListCreateView.as_view(), name="shared-task-list-create"),
-    path("tasks/<int:task_id>/users-who-shared/", vs.users_who_shared_task, name="users-who-shared"),
+    path("tasks/<str:task_id>/users-who-shared/", vs.users_who_shared_task, name="users-who-shared"),
     path("shared-tasks/<int:shared_task_id>/users-who-liked/", vs.users_who_liked_shared_task, name="shared-task-users-who-liked"),
     path("shared-tasks/comments/<int:comment_id>/users-who-liked/", vs.users_who_liked_shared_comment, name="shared-task-comment-users-who-liked"),
     
@@ -77,8 +78,9 @@ urlpatterns = [
     # ========== ADMIN PANEL (Dev Legion Control) ==========
     path("verify-admin/", vs.verify_admin, name="verify-admin"),
     path("admin/users/<uuid:user_id>/verify/", vs.admin_verify_user, name="admin-verify"),
-        # ========== ADMIN ==========
-    path("admin/tasks/<int:task_id>/like/", vs.admin_app_like_task, name="admin-task-like"),
+    # ========== ADMIN ==========
+    # ✅ FIX 500: Mantener la ruta compatible con el esquema real de Postgres (IDs numéricos en api_task).
+    path("admin/tasks/<str:task_id>/like/", vs.admin_app_like_task, name="admin-task-like"),
     path("admin/users/<uuid:user_id>/recommend/", vs.admin_recommend_user, name="admin-recommend"),
     path("admin/profiles/<uuid:profile_id>/like/", vs.admin_app_like_profile, name="admin-profile-like"),
     

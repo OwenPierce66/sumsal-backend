@@ -139,9 +139,8 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     def get_is_favorited(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            # ✅ FIX: `pFavorito` se relaciona con `Profile`, no con `User`.
-            if hasattr(obj, 'profile'):
-                return ms.pFavorito.objects.filter(user=request.user, perfil=obj.profile).exists()
+            # `pFavorito` se relaciona con el usuario objetivo, no con el perfil.
+            return ms.pFavorito.objects.filter(user=request.user, perfil=obj).exists()
         return False
 
     def get_likes_count(self, obj):
