@@ -47,9 +47,7 @@ CSRF_TRUSTED_ORIGINS = (
 # CORS settings
 CORS_ORIGIN_ALLOW_ALL = True
 
-
 # Application definition
-
 INSTALLED_APPS = [
     "api",  # Must be first to ensure User model is available for auth
     "corsheaders",
@@ -63,16 +61,16 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     # Temporarily disabled for migration
     # "forum",
-    "massaging", 
+    "massaging",
     # "newforum",
     # "newpeticiones",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     # "django.middleware.locale.LocaleMiddleware", # ⚡ Desactivado para evitar que inyecte /en/ en la API
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -281,6 +279,13 @@ if DEBUG:
                 "propagate": False,
             },
         },
+    }
+
+    # Anular la limitación de peticiones en modo DEBUG para facilitar el desarrollo
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+        "anon": "1000/day",
+        "user": "5000/day",
+        "auth": "100/minute",  # Permitir 100 inicios de sesión por minuto
     }
 
 

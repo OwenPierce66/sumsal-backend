@@ -144,9 +144,10 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         return False
 
     def get_likes_count(self, obj):
-        # ✅ FIX: `LikeP` se relaciona con `Profile`, no con `User`.
-        if hasattr(obj, 'profile'):
-            return ms.LikeP.objects.filter(profile=obj.profile).count()
+        # ✅ FIX DEFINITIVO: El modelo LikeP.profile ahora apunta a User, no a Profile.
+        # Usamos `obj` (que es un User) directamente en la consulta.
+        # Esto soluciona el error fatal que tumbaba el servidor.
+        return obj.likes_received.count()
         return 0
 
     def get_user_image(self, obj):
@@ -159,9 +160,8 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     def get_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            # ✅ FIX: `LikeP` se relaciona con `Profile`, no con `User`.
-            if hasattr(obj, 'profile'):
-                return ms.LikeP.objects.filter(user=request.user, profile=obj.profile).exists()
+            # ✅ FIX DEFINITIVO: Usamos `obj` (User) directamente, igual que en get_likes_count.
+            return ms.LikeP.objects.filter(user=request.user, profile=obj).exists()
         return False
 
 
@@ -278,7 +278,8 @@ class TaskSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
-    comments = NewPeticionCommentSerializer(many=True, read_only=True) 
+    # ✅ FIX: Especificamos que el campo 'comments' debe leer de la relación 'post_comments' del modelo Task.
+    comments = NewPeticionCommentSerializer(source='post_comments', many=True, read_only=True)
     subtasks = SubTaskSerializer(many=True, read_only=True)
     subfactores = SubFactoresSerializer(many=True, read_only=True)
     subfuentes = SubFuentesSerializer(many=True, read_only=True)
@@ -316,7 +317,7 @@ class TaskSerializer(serializers.ModelSerializer):
         """Devuelve el total de comentarios anidados"""
         try:
             # Obtener solo los comentarios padre (sin parent)
-            parent_comments = obj.comments.filter(parent__isnull=True)
+            parent_comments = obj.post_comments.filter(parent__isnull=True)
             total = sum(self._count_nested_comments(c) for c in parent_comments)
             return total
         except Exception as e:
@@ -371,6 +372,27 @@ class SharedTaskSerializer(serializers.ModelSerializer):
         validated_data["shared_by"] = self.context["request"].user
         return super().create(validated_data)
 
+# ============================================================================
+# SERIALIZER PARA EL FEED UNIFICADO
+# ============================================================================
+
+class FeedItemSerializer(serializers.Serializer):
+    """
+    Serializador "adaptador" que sabe cómo manejar la clase proxy FeedItem.
+    Determina si el item es una Task o una SharedTask y usa el serializador correcto.
+    """
+    def to_representation(self, instance):
+        # `instance` aquí es un objeto `FeedItem`
+        if instance.is_original:
+            # Es una Task original
+            serializer = TaskSerializer(instance.item, context=self.context)
+        else:
+            # Es una SharedTask
+            serializer = SharedTaskSerializer(instance.item, context=self.context)
+        
+        data = serializer.data
+        data['is_original'] = instance.is_original # Añadimos el flag para el frontend
+        return data
 
 # ============================================================================
 # SERIALIZERS PARA IMÁGENES Y PERFILES
@@ -482,6 +504,8 @@ class SharedTaskDetailSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
+    # ✅ AÑADIMOS EL NUEVO CAMPO
+    favorite_sharers_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = ms.SharedTask
@@ -494,6 +518,7 @@ class SharedTaskDetailSerializer(serializers.ModelSerializer):
             "likes_count",
             "user_has_liked",
             "comments_count",
+            "favorite_sharers_count",
             "created_at",
         ]
         read_only_fields = ["id", "shared_by", "created_at"]

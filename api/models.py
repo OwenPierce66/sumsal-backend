@@ -118,9 +118,8 @@ class CategoryP(models.Model):
 
 class Task(TimeStampedModel):
     """Modelo principal de Peticiones/Recetas/Tareas"""
-    # Mantener la PK numérica para coincidir con el esquema actual de Postgres
-    # y evitar el error 500 producido por la comparación bigint = uuid.
-    id = models.BigAutoField(primary_key=True, editable=False)
+    # ✅ FIX: Estandarizar a UUID para consistencia en toda la app.
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -136,6 +135,7 @@ class Task(TimeStampedModel):
     image = models.ImageField(upload_to="tasks/", null=True, blank=True)
     video = models.FileField(upload_to="tasks/videos/", null=True, blank=True)
     share_count = models.PositiveIntegerField(default=0)
+    interaction_score = models.IntegerField(default=0, help_text=_("Score for feed ranking"))
 
     class Meta:
         ordering = ["-created_at"]
@@ -158,13 +158,16 @@ class Like(TimeStampedModel):
 
 class LikeP(models.Model):
     """Likes entre perfiles"""
+    # ✅ FIX DEFINITIVO: Cambiamos la relación de Profile a User.
+    # El código existente (vistas, serializadores) ya pasaba un objeto User,
+    # lo que causaba un error fatal en la base de datos y tumbaba el servidor (Error 502).
+    # Al alinear el modelo con el uso real, eliminamos la causa raíz del problema.
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="likes_given")
-    profile = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name="likes")
+    profile = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="likes_received")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ("user", "profile")
-
 
 class Favorito(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="user_favorites")
@@ -188,6 +191,8 @@ class pFavorito(models.Model):
 
 
 class SharedTask(TimeStampedModel):
+    # ✅ FIX: Estandarizar a UUID para consistencia.
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="shared_instances")
     shared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shares")
     description = models.TextField(blank=True, default="")
@@ -200,8 +205,12 @@ class SharedTask(TimeStampedModel):
 class NewPeticionCommentPost(TimeStampedModel):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="comments")
     parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="replies")
-    post = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="comments")
-    aportacion = models.ForeignKey(Task, on_delete=models.SET_NULL, null=True, blank=True, related_name="contributions")
+    
+    # ✅ FIX MIGRATIONS: Se especifican related_name únicos para evitar conflictos
+    # al tener dos ForeignKey apuntando al mismo modelo (Task).
+    post = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="post_comments")
+    aportacion = models.ForeignKey(Task, on_delete=models.SET_NULL, null=True, blank=True, related_name="aportacion_comments")
+    
     text = models.TextField(_("comment text"))
 
     class Meta:

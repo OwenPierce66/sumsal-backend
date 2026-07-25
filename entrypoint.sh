@@ -10,16 +10,6 @@ while ! nc -z db 5432; do
 done
 echo "--- ¡Base de datos iniciada! ---"
 
-# 1. Collect static files only if in Production
-if [ "$DEBUG" = "False" ] || [ "$DEBUG" = "0" ]; then
-    echo "--- PRODUCTION MODE: Collecting static files ---"
-    /usr/local/bin/python manage.py collectstatic --noinput
-fi
-
-# 2. Run migrations
-echo "--- Running Migrations ---"
-/usr/local/bin/python manage.py migrate --noinput
-
-# 3. Inicia el comando principal (el CMD del Dockerfile)
+# Inicia el comando principal (el CMD del Dockerfile)
 echo "--- Iniciando el servidor ---"
 exec "$@"

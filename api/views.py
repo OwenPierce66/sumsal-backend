@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Exists, OuterRef, Q, Subquery
+from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.db.models import Case, When, Value, IntegerField, CharField
 from django.conf import settings
 from rest_framework.exceptions import PermissionDenied
 
@@ -13,6 +15,7 @@ from rest_framework.pagination import PageNumberPagination, LimitOffsetPaginatio
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .serializers import ProfileSerializer, file_to_abs_url
 from .serializers import (
     UserSerializer,
     SimpleUserSerializer,
@@ -22,14 +25,17 @@ from .serializers import (
     SharedTaskSerializer,
     SharedTaskDetailSerializer,
     NewPeticionCommentSerializer,
+    FeedItemSerializer,
     SharedTaskCommentSerializer,
     FavoritoSerializer,
     PortadaSerializer,
     ImagenFijaSerializer,
-    PosttSerializer,
+    PosttSerializer
 )
 from . import models as ms
+from itertools import chain
 from . import throttling as ts
+from django.db.models import F
 
 User = get_user_model()
 
@@ -160,7 +166,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
                 qs = qs.filter(favorited_by__user=self.request.user)
 
         if favorite_users_only in ['true', '1', 'True', True]:
-            qs = qs.filter(user__profile_favorites_received__user=self.request.user)
+            qs = qs.filter(user__profile_favorites_received__user=self.request.user).distinct()
             
         if verified_users_only in ['true', '1', 'True', True]:
             qs = qs.filter(user__profile__is_verified=True)
@@ -169,7 +175,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(user__profile__is_recommended=True)
             
         qs = qs.select_related("user").prefetch_related(
-            "likes", "comments", "subtasks", "subfuentes", "subfactores"
+            "likes", "post_comments", "subtasks", "subfuentes", "subfactores"
         )
         
         if sort_by == "likes":
@@ -347,8 +353,15 @@ def like_unlike_profile(request, profile_id):
     Da o quita like a un perfil.
     Devuelve el estado final del like y el nuevo contador total.
     """
-    target_profile = get_object_or_404(ms.Profile, id=profile_id)
-    like, created = ms.LikeP.objects.get_or_create(user=request.user, profile=target_profile)
+    # ✅ FIX 500: El ID puede ser de User o de Profile. Buscamos el User directamente.
+    try:
+        target_user = get_object_or_404(User, Q(id=profile_id) | Q(profile__id=profile_id))
+    except (ValueError, User.DoesNotExist):
+        return Response({"error": "User or Profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    # El modelo LikeP.profile apunta a un User, así que usamos target_user.
+    like, created = ms.LikeP.objects.get_or_create(user=request.user, profile=target_user)
+
 
     if not created:
         like.delete()
@@ -357,8 +370,37 @@ def like_unlike_profile(request, profile_id):
         liked = True
 
     # Devolvemos el estado final y el nuevo contador
-    likes_count = target_profile.likes.count()
+    likes_count = target_user.likes_received.count()
     return Response({'liked': liked, 'likes_count': likes_count}, status=status.HTTP_200_OK)
+
+# ============================================================================
+# REPOST (IMPULSO)
+# ============================================================================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def repost_task(request, task_id):
+    """
+    Registra un 'reposteo' de una tarea, incrementando su contador de compartidos
+    y su puntuación de interacción para mejorar su visibilidad en el feed.
+    """
+    try:
+        # Usamos select_for_update para bloquear la fila y evitar race conditions
+        task = ms.Task.objects.select_for_update().get(id=task_id)
+        
+        # Actualización atómica: incrementa ambos contadores en una sola operación de BD.
+        task.share_count = F('share_count') + 1
+        task.interaction_score = F('interaction_score') + 3 # Damos 3 puntos por repostear
+        
+        task.save(update_fields=['share_count', 'interaction_score'])
+        
+        task.refresh_from_db()
+
+        return Response({ "status": "success", "share_count": task.share_count }, status=status.HTTP_200_OK)
+
+    except ms.Task.DoesNotExist:
+        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
 
 # ============================================================================
 # FUNCIONES DE COMPATIBILIDAD URLS
@@ -371,24 +413,18 @@ def users_who_liked_task(request, task_id):
     Obtiene la lista de usuarios a los que les gustó una tarea.
     Esta es la versión optimizada y correcta.
     """
-    # ✅ FIX DEFINITIVO: Ahora que Task.id es un UUID, la búsqueda es directa y segura.
-    # Ya no se necesita la lógica condicional, eliminando la fuente del error 500.
-    try:
-        get_object_or_404(ms.Task, id=task_id)
-    except (ValueError, ms.Task.DoesNotExist):
-        return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+    # ✅ FIX: Ahora que Task.id es un UUID, la consulta es directa y sin conversiones.
+    # Esto soluciona el error 500.
+    users_qs = User.objects.filter(task_likes__task_id=task_id)
 
     # Subconsulta para obtener la imagen de perfil más reciente
     latest_img = ms.ImagenFija.objects.filter(user=OuterRef("pk")).order_by("-id").values("image")[:1]
 
     # Subconsulta para verificar si el usuario dio like a esta tarea
-    likes_exists = ms.Like.objects.filter(task_id=task_id, user_id=OuterRef("pk"))
+    # likes_exists = ms.Like.objects.filter(task_id=task_id, user_id=OuterRef("pk")) # No se usa actualmente
 
-    # Obtenemos los usuarios que cumplen la condición
-    users_qs = User.objects.annotate(
-        user_image=Subquery(latest_img),
-        liked=Exists(likes_exists),
-    ).filter(liked=True)
+    # Obtenemos los usuarios que dieron like a esta tarea específica
+    users_qs = users_qs.annotate(user_image=Subquery(latest_img)).distinct()
 
     # Construimos la respuesta manualmente para que coincida con lo que el modal espera
     out = []
@@ -401,7 +437,10 @@ def users_who_liked_task(request, task_id):
         out.append({
             "id": u.id,
             "username": u.username,
-            "likes_count": ms.LikeP.objects.filter(profile=u).count(),
+            # ✅ FIX DEFINITIVO: El modelo LikeP.profile ahora apunta a User.
+            # Usamos el related_name `likes_received` para contar eficientemente.
+            # Esto soluciona el error fatal que tumbaba el servidor.
+            "likes_count": u.likes_received.count(),
             "user_image": file_to_abs_url(getattr(u, "user_image", None), request),
             "profile": ProfileSerializer(p).data if p else None
         })
@@ -477,7 +516,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(task__favorited_by__user=self.request.user)
 
         if favorite_users_only in ['true', '1', 'True', True]:
-            qs = qs.filter(shared_by__profile_favorites_received__user=self.request.user) | qs.filter(task__user__profile_favorites_received__user=self.request.user)
+            qs = qs.filter(Q(shared_by__profile_favorites_received__user=self.request.user) | Q(task__user__profile_favorites_received__user=self.request.user)).distinct()
 
         if verified_users_only in ['true', '1', 'True', True]:
             qs = qs.filter(shared_by__profile__is_verified=True) | qs.filter(task__user__profile__is_verified=True)
@@ -494,21 +533,35 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             
         return qs
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
-        task = get_object_or_404(ms.Task, id=request.data.get("task_id"))
+        task_id = request.data.get("task_id")
+        if not task_id:
+            return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Bloqueamos la tarea para actualizarla de forma segura
+        task = get_object_or_404(ms.Task.objects.select_for_update(), id=task_id)
+
         shared, created = ms.SharedTask.objects.get_or_create(
             task=task,
             shared_by=request.user,
             defaults={"description": request.data.get("description", "")},
         )
-        if not created:
-            return Response({"detail": "Ya compartido"}, status=400)
 
-        task.share_count += 1
-        task.save()
+        if created:
+            # Si es la primera vez que comparte, incrementamos contadores.
+            task.share_count = F('share_count') + 1
+            task.interaction_score = F('interaction_score') + 1  # 1 punto por compartir
+            task.save(update_fields=['share_count', 'interaction_score'])
+            status_code = status.HTTP_201_CREATED
+        else:
+            # Si ya existía, actualizamos la descripción.
+            shared.description = request.data.get("description", shared.description)
+            shared.save(update_fields=['description'])
+            status_code = status.HTTP_200_OK
 
         serializer = self.get_serializer(shared)
-        return Response(serializer.data, status=201)
+        return Response(serializer.data, status=status_code)
 
 
 @api_view(["POST"])
@@ -560,13 +613,19 @@ def list_likes(request, profile_id):
         profile = get_object_or_404(ms.Profile, Q(user_id=profile_id) | Q(id=profile_id))
     except (ValueError, ms.Profile.DoesNotExist):
         return Response({"error": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
-    likes = profile.likes.all()
-    users = [like.user for like in likes if like.user]
+
+    # ✅ FIX 500: La relación `likes_received` está en el modelo User, no en Profile.
+    # El campo `profile` en el modelo `LikeP` apunta a un `User`.
+    # Por lo tanto, para obtener los usuarios que dieron "like", filtramos
+    # los `LikeP` donde el `profile` (que es un User) es `profile.user`.
+    likes = ms.LikeP.objects.filter(profile=profile.user).select_related('user')
+    users = [like.user for like in likes]
     serializer = SimpleUserSerializer(users, many=True, context={'request': request})
 
     viewer_has_liked = False
     if request.user.is_authenticated:
-        viewer_has_liked = ms.LikeP.objects.filter(user=request.user, profile=profile).exists()
+        # Usamos `profile.user` para que coincida con el modelo LikeP.
+        viewer_has_liked = ms.LikeP.objects.filter(user=request.user, profile=profile.user).exists()
 
     return Response({ 'results': serializer.data, 'viewer_has_liked': viewer_has_liked })
 
@@ -671,6 +730,95 @@ def portada_update_delete(request, portada_id):
         return Response(serializer.data)
     return Response(serializer.errors, status=400)
 
+
+class FeedItem:
+    """
+    Clase proxy para unificar Task y SharedTask en un solo tipo de objeto para el feed.
+    Esto simplifica la serialización y el ordenamiento.
+    """
+    def __init__(self, item, priority, is_original):
+        self.item = item
+        self.priority = priority
+        self.is_original = is_original
+        self.created_at = item.created_at
+
+class FeedView(generics.ListAPIView):
+    """
+    Vista unificada que combina Tasks y SharedTasks en un solo feed,
+    ordenado por prioridad de usuario y luego por fecha.
+    """
+    # ✅ FIX: No usamos un serializer_class único, ya que manejamos dos tipos de objetos.
+    # La serialización se hará manualmente en get_queryset.
+    serializer_class = FeedItemSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly] # Cualquiera puede ver el feed
+    pagination_class = StandardPagination
+
+    def get_queryset(self):
+        # Prioridad: admin > recomendado > verificado > regular
+        # 1. Definir las prioridades para el ordenamiento
+        user_priority = Case(
+            When(Q(user__is_staff=True) | Q(user__is_superuser=True), then=Value(4)),
+            When(user__profile__is_recommended=True, then=Value(3)),
+            When(user__profile__is_verified=True, then=Value(2)),
+            default=Value(1),
+            output_field=IntegerField(),
+        )
+        shared_by_priority = Case(
+            When(Q(shared_by__is_staff=True) | Q(shared_by__is_superuser=True), then=Value(4)),
+            When(shared_by__profile__is_recommended=True, then=Value(3)),
+            When(shared_by__profile__is_verified=True, then=Value(2)),
+            default=Value(1),
+            output_field=IntegerField(),
+        )
+
+        # 1. Obtener TAREAS ORIGINALES con todas sus relaciones precargadas
+        tasks = ms.Task.objects.annotate(
+            priority=user_priority
+        ).select_related('user__profile').prefetch_related('likes', 'post_comments', 'subtasks', 'subfactores', 'subfuentes')
+
+        # 2. Obtener TAREAS COMPARTIDAS con todas sus relaciones precargadas
+        shared_tasks = ms.SharedTask.objects.annotate(
+            priority=shared_by_priority
+        ).select_related(
+            'shared_by__profile', 'task__user__profile'
+        ).prefetch_related(
+            'likes', 'comments', 'task__post_comments', 'task__subtasks', 
+            'task__subfactores', 'task__subfuentes', 'task__likes'
+        )
+
+        # ✅ LÓGICA DE FAVORITOS: Anotar cuántos de los que compartieron son favoritos del viewer
+        if self.request.user.is_authenticated:
+            favorite_sharers_subquery = ms.SharedTask.objects.filter(
+                task_id=OuterRef('task_id'),
+                shared_by__profile_favorites_received__user=self.request.user
+            ).values('task_id').annotate(count=Count('id')).values('count')
+            
+            shared_tasks = shared_tasks.annotate(
+                favorite_sharers_count=Subquery(favorite_sharers_subquery, output_field=IntegerField())
+            )
+
+        # 3. Normalizar Tasks para que tengan una estructura similar a SharedTask
+        # Esto evita errores en el serializador.
+        normalized_tasks = []
+        for task in tasks:
+            normalized_tasks.append(FeedItem(item=task, priority=task.priority, is_original=True))
+
+        # 4. Combinar y ordenar en Python
+        combined_list = sorted(
+            normalized_tasks,
+            key=lambda x: (x.priority, x.created_at),
+            reverse=True
+        )
+        return combined_list
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        # ✅ FIX: Serializar la página de resultados, no el queryset completo.
+        serializer = self.get_serializer(page, many=True)
+        return self.get_paginated_response(serializer.data)
+
+
 # ============================================================================
 # ACCIONES ADMIN
 # ============================================================================
@@ -735,7 +883,7 @@ def admin_app_like_profile(request, profile_id):
     return Response({
         "profile_id": profile_user.id,
         "liked": True,
-        "likes_count": ms.LikeP.objects.filter(profile=profile_user).count()
+        "likes_count": profile_user.likes_received.count()
     })
 
 # ============================================================================
