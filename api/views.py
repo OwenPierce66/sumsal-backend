@@ -382,22 +382,32 @@ def like_unlike_profile(request, profile_id):
 @transaction.atomic
 def repost_task(request, task_id):
     """
-    Registra un 'reposteo' de una tarea, incrementando su contador de compartidos
-    y su puntuación de interacción para mejorar su visibilidad en el feed.
+    Activa o desactiva un 'repost' de una tarea por parte de un usuario.
+    Esto solo afecta la puntuación de interacción de la tarea original para el feed,
+    sin crear un objeto SharedTask. Funciona como un interruptor (toggle).
     """
     try:
         # Usamos select_for_update para bloquear la fila y evitar race conditions
         task = ms.Task.objects.select_for_update().get(id=task_id)
-        
-        # Actualización atómica: incrementa ambos contadores en una sola operación de BD.
-        task.share_count = F('share_count') + 1
-        task.interaction_score = F('interaction_score') + 3 # Damos 3 puntos por repostear
-        
-        task.save(update_fields=['share_count', 'interaction_score'])
-        
-        task.refresh_from_db()
 
-        return Response({ "status": "success", "share_count": task.share_count }, status=status.HTTP_200_OK)
+        # Usamos el modelo 'Like' como si fuera 'Repost' para registrar la acción.
+        repost_instance, created = ms.Like.objects.get_or_create(user=request.user, task=task)
+
+        if not created:
+            # El usuario ya había reposteado, así que revertimos la acción.
+            repost_instance.delete()
+            task.interaction_score = F('interaction_score') - 1
+            reposted = False
+        else:
+            # Es la primera vez que repostea, aumentamos la popularidad.
+            task.interaction_score = F('interaction_score') + 1
+            reposted = True
+
+        task.save(update_fields=['interaction_score'])
+        # Usamos refresh_from_db para obtener el valor actualizado del score
+        task.refresh_from_db(fields=['interaction_score'])
+
+        return Response({"reposted": reposted, "interaction_score": task.interaction_score}, status=status.HTTP_200_OK)
 
     except ms.Task.DoesNotExist:
         return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -538,29 +548,50 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         task_id = request.data.get("task_id")
         if not task_id:
             return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        print(f"\n[BACKEND LOG] --- Iniciando 'create' en SharedTaskListCreateView para task_id: {task_id} ---")
 
         # Bloqueamos la tarea para actualizarla de forma segura
         task = get_object_or_404(ms.Task.objects.select_for_update(), id=task_id)
+        print(f"[BACKEND LOG] Tarea encontrada. Valores ANTES de actualizar: share_count={task.share_count}, interaction_score={task.interaction_score}")
 
         shared, created = ms.SharedTask.objects.get_or_create(
             task=task,
             shared_by=request.user,
             defaults={"description": request.data.get("description", "")},
         )
+        print(f"[BACKEND LOG] SharedTask 'created': {created}")
+
+        # ✅ FIX LÓGICA DE CONTADORES:
+        # 1. El share_count SIEMPRE se incrementa.
+        # 2. El interaction_score solo se incrementa si el usuario NUNCA ha interactuado
+        #    (ni con un 'share' ni con un 'repost', que se registran en el modelo Like).
+        has_interacted_before = ms.Like.objects.filter(user=request.user, task=task).exists()
+
+        update_fields = {'share_count': F('share_count') + 1}
+        if not has_interacted_before:
+            print("[BACKEND LOG] Primera interacción del usuario. Incrementando interaction_score.")
+            update_fields['interaction_score'] = F('interaction_score') + 1
+            # Registramos la interacción en el modelo Like para que no vuelva a contar.
+            ms.Like.objects.get_or_create(user=request.user, task=task)
+        
+        ms.Task.objects.filter(pk=task.pk).update(**update_fields)
+
+        # Recargamos la tarea desde la DB para obtener los contadores actualizados.
+        task.refresh_from_db()
+        print(f"[BACKEND LOG] Tarea recargada desde DB. Valores DESPUÉS de actualizar: share_count={task.share_count}, interaction_score={task.interaction_score}")
 
         if created:
-            # Si es la primera vez que comparte, incrementamos contadores.
-            task.share_count = F('share_count') + 1
-            task.interaction_score = F('interaction_score') + 1  # 1 punto por compartir
-            task.save(update_fields=['share_count', 'interaction_score'])
             status_code = status.HTTP_201_CREATED
         else:
-            # Si ya existía, actualizamos la descripción.
+            # Si ya existía, solo actualizamos la descripción.
             shared.description = request.data.get("description", shared.description)
             shared.save(update_fields=['description'])
             status_code = status.HTTP_200_OK
 
         serializer = self.get_serializer(shared)
+        print("[BACKEND LOG] Serializando y enviando respuesta al frontend...")
+        print(f"[BACKEND LOG] --- Fin del proceso para task_id: {task_id} ---\n")
         return Response(serializer.data, status=status_code)
 
 
