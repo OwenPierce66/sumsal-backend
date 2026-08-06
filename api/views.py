@@ -423,10 +423,7 @@ def users_who_liked_task(request, task_id):
     Obtiene la lista de usuarios a los que les gustó una tarea.
     Esta es la versión optimizada y correcta.
     """
-    # ✅ FIX: Ahora que Task.id es un UUID, la consulta es directa y sin conversiones.
-    # Esto soluciona el error 500.
-    users_qs = User.objects.filter(task_likes__task_id=task_id)
-
+    users_qs = User.objects.filter(task_likes__task_id=task_id).distinct()
     # Subconsulta para obtener la imagen de perfil más reciente
     latest_img = ms.ImagenFija.objects.filter(user=OuterRef("pk")).order_by("-id").values("image")[:1]
 
@@ -785,6 +782,10 @@ class FeedView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
+        # ✅ LÓGICA DE FILTRO: Leemos el parámetro 'sort_by' para decidir qué feed mostrar.
+        # El frontend enviará 'all' para el feed unificado.
+        sort_by = self.request.query_params.get("sort_by")
+
         # Prioridad: admin > recomendado > verificado > regular
         # 1. Definir las prioridades para el ordenamiento
         user_priority = Case(
@@ -802,51 +803,60 @@ class FeedView(generics.ListAPIView):
             output_field=IntegerField(),
         )
 
-        # 1. Obtener TAREAS ORIGINALES con todas sus relaciones precargadas
-        tasks = ms.Task.objects.annotate(
-            priority=user_priority
-        ).select_related('user__profile').prefetch_related('likes', 'post_comments', 'subtasks', 'subfactores', 'subfuentes')
+        # ✅ COMPORTAMIENTO POR DEFECTO: Mostrar solo tareas originales.
+        if sort_by != 'all':
+            tasks = ms.Task.objects.annotate(
+                priority=user_priority
+            ).select_related('user__profile').prefetch_related('likes', 'post_comments', 'subtasks', 'subfactores', 'subfuentes')
 
-        # 2. Obtener TAREAS COMPARTIDAS con todas sus relaciones precargadas
-        shared_tasks = ms.SharedTask.objects.annotate(
-            priority=shared_by_priority
-        ).select_related(
-            'shared_by__profile', 'task__user__profile'
-        ).prefetch_related(
-            'likes', 'comments', 'task__post_comments', 'task__subtasks', 
-            'task__subfactores', 'task__subfuentes', 'task__likes'
-        )
+        # ✅ COMPORTAMIENTO PARA "all": Mostrar el feed unificado.
+        else:
+            tasks = ms.Task.objects.annotate(priority=user_priority).select_related('user__profile')
+            shared_tasks = ms.SharedTask.objects.annotate(priority=shared_by_priority).select_related('shared_by__profile', 'task__user__profile')
 
-        # ✅ LÓGICA DE FAVORITOS: Anotar cuántos de los que compartieron son favoritos del viewer
-        if self.request.user.is_authenticated:
-            favorite_sharers_subquery = ms.SharedTask.objects.filter(
-                task_id=OuterRef('task_id'),
-                shared_by__profile_favorites_received__user=self.request.user
-            ).values('task_id').annotate(count=Count('id')).values('count')
-            
-            shared_tasks = shared_tasks.annotate(
-                favorite_sharers_count=Subquery(favorite_sharers_subquery, output_field=IntegerField())
+            task_items = [
+                FeedItem(item=task, priority=task.priority, is_original=True)
+                for task in tasks
+            ]
+            shared_task_items = [
+                FeedItem(item=shared_task, priority=shared_task.priority, is_original=False)
+                for shared_task in shared_tasks
+            ]
+
+            combined_list_unord = task_items + shared_task_items
+            combined_list = sorted(
+                combined_list_unord,
+                key=lambda x: (x.priority, x.created_at),
+                reverse=True
             )
+            return combined_list
+            
+        # Aplicar ordenamiento de likes si se solicita
+        if sort_by == 'likes':
+            tasks = tasks.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
+        else: # Orden por defecto (más recientes)
+            tasks = tasks.order_by('-priority', '-created_at')
 
-        # 3. Normalizar Tasks para que tengan una estructura similar a SharedTask
-        # Esto evita errores en el serializador.
-        normalized_tasks = []
-        for task in tasks:
-            normalized_tasks.append(FeedItem(item=task, priority=task.priority, is_original=True))
+        # ✅ FIX: Devolvemos el queryset de Task directamente, el serializador se encargará del resto.
+        return tasks
 
-        # 4. Combinar y ordenar en Python
-        combined_list = sorted(
-            normalized_tasks,
-            key=lambda x: (x.priority, x.created_at),
-            reverse=True
-        )
-        return combined_list
+        
+
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
-        # ✅ FIX: Serializar la página de resultados, no el queryset completo.
-        serializer = self.get_serializer(page, many=True)
+
+        # ✅ FIX: Si el queryset es de Tasks, usamos TaskSerializer.
+        # Si es una lista de FeedItem, usamos FeedItemSerializer.
+        if isinstance(queryset, list) and queryset and isinstance(queryset[0], FeedItem):
+             serializer = self.get_serializer(page, many=True)
+        elif page:
+             # Si es un queryset de Task, usamos el serializador de Task.
+             serializer = TaskSerializer(page, many=True, context={'request': request})
+        else:
+            serializer = self.get_serializer(page, many=True)
+
         return self.get_paginated_response(serializer.data)
 
 

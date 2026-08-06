@@ -284,17 +284,28 @@ class TaskSerializer(serializers.ModelSerializer):
     subfactores = SubFactoresSerializer(many=True, read_only=True)
     subfuentes = SubFuentesSerializer(many=True, read_only=True)
     is_favorited = serializers.SerializerMethodField()
+    is_original = serializers.SerializerMethodField()
+    shared_by_list = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
         fields = '__all__'
         read_only_fields = ["id", "user", "share_count", "created_at"]
 
+    def get_is_original(self, obj):
+        # Por defecto, si serializamos una Task directamente, es original.
+        return True
+
     def get_is_favorited(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             return ms.Favorito.objects.filter(user=request.user, task=obj).exists()
         return False
+
+    def get_shared_by_list(self, obj):
+        # Devuelve una lista de objetos de usuario simplificados que han compartido esta tarea.
+        shared_instances = ms.SharedTask.objects.filter(task=obj).select_related('shared_by')
+        return [SimpleUserSerializer(s.shared_by, context=self.context).data for s in shared_instances]
 
     def _count_nested_comments(self, comment):
         """Cuenta un comentario y todas sus respuestas recursivamente"""
