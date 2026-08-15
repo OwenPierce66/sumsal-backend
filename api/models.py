@@ -89,6 +89,54 @@ class Profile(TimeStampedModel):
         return f"Profile for {self.user.email}"
 
 
+class Notification(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="triggered_notifications",
+    )
+    notification_type = models.CharField(max_length=64)
+    target_type = models.CharField(max_length=32)
+    target_id = models.CharField(max_length=255)
+    secondary_target_type = models.CharField(max_length=32, blank=True, default="")
+    secondary_target_id = models.CharField(max_length=255, blank=True, default="")
+    data = models.JSONField(default=dict, blank=True)
+    dedupe_key = models.CharField(max_length=255, blank=True, default="")
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["recipient", "is_read", "-created_at"],
+                name="notification_rec_read_idx",
+            ),
+            models.Index(
+                fields=["target_type", "target_id"],
+                name="notification_target_idx",
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["recipient", "dedupe_key"],
+                condition=~models.Q(dedupe_key=""),
+                name="notification_rec_dedupe_uniq",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.notification_type} for {self.recipient_id}"
+
+
 # ============================================================================
 # CONTENIDO Y CATEGORÍAS
 # ============================================================================

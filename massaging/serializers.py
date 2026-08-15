@@ -23,10 +23,17 @@ class UserSerializer(serializers.ModelSerializer):
     image = serializers.SerializerMethodField()
     profile_image = serializers.SerializerMethodField()
     avatar = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "username", "image", "profile_image", "avatar"]
+        fields = ["id", "username", "name", "email", "image", "profile_image", "avatar"]
+
+    def get_name(self, obj):
+        full_name = " ".join(
+            part for part in (obj.first_name, obj.last_name) if part
+        ).strip()
+        return full_name or obj.username or obj.email
 
     def _get_any_image_field(self, obj):
         """
@@ -145,6 +152,8 @@ class MessageSerializer(serializers.ModelSerializer):
             "image",
             "video",
             "timestamp",
+            "is_read",
+            "read_at",
             "replied_to",
             "attachments",
             "sender_image",
@@ -192,7 +201,13 @@ class GroupSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "created_at", "created_by", "members"]
 
     def get_members(self, obj):
-        memberships = GroupMembership.objects.filter(group=obj).select_related('user')
+        memberships = getattr(obj, "prefetched_memberships", None)
+        if memberships is None:
+            memberships = (
+                GroupMembership.objects.filter(group=obj)
+                .select_related("user")
+                .order_by("joined_at", "id")
+            )
         data = []
         for m in memberships:
             user_data = UserSerializer(m.user, context=self.context).data
@@ -201,12 +216,24 @@ class GroupSerializer(serializers.ModelSerializer):
         return data
 
 
+class GroupCreateSerializer(serializers.ModelSerializer):
+    members = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        many=True,
+        required=False,
+    )
+
+    class Meta:
+        model = Group
+        fields = ["name", "members"]
+
+
 class GroupMembershipSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
 
     class Meta:
         model = GroupMembership
-        fields = ["id", "user", "group", "is_admin", "joined_at"]
+        fields = ["id", "user", "group", "is_admin", "joined_at", "last_read_at"]
 
 
 class GroupMessageSerializer(serializers.ModelSerializer):

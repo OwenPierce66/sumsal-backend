@@ -20,6 +20,8 @@ class Message(models.Model):
     image = models.ImageField(storage=ImagenText(), null=True, blank=True)
     video = models.FileField(storage=VideoStorage(), null=True, blank=True)
     timestamp = models.DateTimeField(auto_now_add=True)
+    is_read = models.BooleanField(default=False)
+    read_at = models.DateTimeField(null=True, blank=True)
 
     # 👇 NUEVO: referencia al mensaje al que responde (opcional)
     replied_to = models.ForeignKey(
@@ -102,6 +104,15 @@ class GroupMembership(models.Model):
     group = models.ForeignKey(Group, on_delete=models.CASCADE)
     is_admin = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
+    last_read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user', 'group'],
+                name='unique_group_membership',
+            ),
+        ]
 
     def __str__(self):
         return f'{self.user} in {self.group} (admin={self.is_admin})'

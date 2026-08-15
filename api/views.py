@@ -35,6 +35,7 @@ from .serializers import (
     PosttSerializer
 )
 from . import models as ms
+from .notifications import retire_notification
 from itertools import chain
 from . import throttling as ts
 from django.db.models import F
@@ -506,6 +507,7 @@ def repost_task(request, task_id):
             # Es la primera vez que repostea, aumentamos la popularidad.
             task.interaction_score = F('interaction_score') + 1
             reposted = True
+            retire_notification(dedupe_key=f"api.like:{repost_instance.pk}")
 
         task.save(update_fields=['interaction_score'])
         # Usamos refresh_from_db para obtener el valor actualizado del score
@@ -762,7 +764,13 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             print("[BACKEND LOG] Primera interacción del usuario. Incrementando interaction_score.")
             update_fields['interaction_score'] = F('interaction_score') + 1
             # Registramos la interacción en el modelo Like para que no vuelva a contar.
-            ms.Like.objects.get_or_create(user=request.user, task=task)
+            interaction, interaction_created = ms.Like.objects.get_or_create(
+                user=request.user,
+                task=task,
+            )
+            if interaction_created:
+                # Like también se usa aquí como marcador interno, no como un like real.
+                retire_notification(dedupe_key=f"api.like:{interaction.pk}")
         
         ms.Task.objects.filter(pk=task.pk).update(**update_fields)
 

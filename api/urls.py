@@ -1,11 +1,19 @@
 from django.urls import path
 from . import views
+from . import notification_views
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
 
 urlpatterns = [
+    # Notificaciones
+    path('notifications/', notification_views.NotificationListView.as_view(), name='notification-list'),
+    path('notifications/unread-count/', notification_views.unread_count, name='notification-unread-count'),
+    path('notifications/mark-all-read/', notification_views.mark_all_read, name='notification-mark-all-read'),
+    path('notifications/<uuid:notification_id>/mark-read/', notification_views.mark_read, name='notification-mark-read'),
+    path('notifications/<uuid:notification_id>/', notification_views.delete_notification, name='notification-delete'),
+
     # Autenticación y Usuarios
     path('auth/register/', views.RegisterView.as_view(), name='register'),
     # ✅ FIX: Usar las vistas correctas de simplejwt y eliminar duplicados

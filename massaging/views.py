@@ -1,5 +1,7 @@
 from django.utils import timezone
-from django.db.models import Q
+from django.core.exceptions import ValidationError
+from django.db import transaction
+from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.shortcuts import get_object_or_404
 
 from rest_framework.views import APIView
@@ -24,10 +26,28 @@ from .models import (
 from .serializers import (
     UserSerializer,
     MessageSerializer,
+    GroupCreateSerializer,
     GroupSerializer,
     GroupMembershipSerializer,
     GroupMessageSerializer,
 )
+
+
+def _sender_name(user):
+    return user.username or f"{user.first_name} {user.last_name}".strip() or user.email
+
+
+def _message_preview(message):
+    content = (message.content or "").strip()
+    if content:
+        return content, "text"
+    if message.image:
+        return "Imagen", "image"
+    if message.video:
+        return "Video", "video"
+    if getattr(message, "has_attachment", False):
+        return "Archivo adjunto", "attachment"
+    return "", "empty"
 
 
 @api_view(['DELETE'])
@@ -87,61 +107,121 @@ class UnifiedConversationsView(APIView):
 
     def get(self, request, format=None):
         user = request.user
-
-        conversations_map = {}
-
-        # ---------- 1) Conversaciones directas ----------
         direct_qs = (
-            Message.objects
+            Message.objects.annotate(
+                has_attachment=Exists(
+                    MessageAttachment.objects.filter(message_id=OuterRef("pk"))
+                )
+            )
             .filter(Q(sender=user) | Q(receiver=user))
-            .select_related('sender', 'receiver')
-            .order_by('-timestamp')
+            .select_related(
+                "sender",
+                "receiver",
+                "sender__profile",
+                "receiver__profile",
+            )
+            .order_by("-timestamp", "-id")
         )
 
+        direct_conversations = {}
         for msg in direct_qs:
-            other = msg.receiver if msg.sender == user else msg.sender
-            key = f"direct-{other.id}"
-
-            existing = conversations_map.get(key)
-            if existing is None or existing["last_timestamp"] < msg.timestamp:
+            other = msg.receiver if msg.sender_id == user.id else msg.sender
+            conversation = direct_conversations.get(other.id)
+            if conversation is None:
+                preview, message_type = _message_preview(msg)
                 other_image = UserSerializer(other, context={'request': request}).data.get('image')
-                conversations_map[key] = {
+                conversation = {
                     "id": other.id,
                     "type": "direct",
-                    "title": other.username,
+                    "title": _sender_name(other),
                     "image": other_image,
-                    "last_message": msg.content or "",
-                    "last_timestamp": msg.timestamp,  # datetime
+                    "last_message": preview,
+                    "last_timestamp": msg.timestamp,
+                    "last_sender_name": _sender_name(msg.sender),
+                    "last_message_type": message_type,
+                    "unread_count": 0,
                 }
+                direct_conversations[other.id] = conversation
+            if msg.receiver_id == user.id and not msg.is_read:
+                conversation["unread_count"] += 1
 
-        # ---------- 2) Conversaciones de grupo (vía GroupMembership) ----------
-        group_ids = (
-            GroupMembership.objects
-            .filter(user=user)
-            .values_list('group_id', flat=True)
-        )
-        group_qs = Group.objects.filter(id__in=group_ids).distinct()
-
-        for group in group_qs:
-            last_msg = (
-                GroupMessage.objects
-                .filter(group=group)
-                .select_related('sender')
-                .order_by('-timestamp')
-                .first()
+        memberships = list(
+            GroupMembership.objects.filter(user=user).select_related(
+                "group",
+                "group__created_by",
             )
+        )
+        membership_by_group = {
+            membership.group_id: membership for membership in memberships
+        }
+        group_ids = list(membership_by_group)
+        member_counts = {
+            row["group_id"]: row["member_count"]
+            for row in (
+                GroupMembership.objects.filter(group_id__in=group_ids)
+                .values("group_id")
+                .annotate(member_count=Count("id"))
+            )
+        }
 
-            key = f"group-{group.id}"
-            conversations_map[key] = {
-                "id": group.id,
-                "type": "group",
-                "title": group.name,
-                "last_message": last_msg.content if last_msg else "",
-                "last_timestamp": last_msg.timestamp if last_msg else None,
-            }
+        group_conversations = {}
+        group_messages_qs = (
+            GroupMessage.objects.annotate(
+                has_attachment=Exists(
+                    GroupMessageAttachment.objects.filter(message_id=OuterRef("pk"))
+                )
+            )
+            .filter(group_id__in=group_ids)
+            .select_related("sender")
+            .order_by("-timestamp", "-id")
+        )
+        for msg in group_messages_qs:
+            membership = membership_by_group[msg.group_id]
+            conversation = group_conversations.get(msg.group_id)
+            if conversation is None:
+                preview, message_type = _message_preview(msg)
+                conversation = {
+                    "last_message": preview,
+                    "last_timestamp": msg.timestamp,
+                    "last_sender_name": _sender_name(msg.sender),
+                    "last_message_type": message_type,
+                    "unread_count": 0,
+                }
+                group_conversations[msg.group_id] = conversation
+            if (
+                msg.sender_id != user.id
+                and (
+                    membership.last_read_at is None
+                    or msg.timestamp > membership.last_read_at
+                )
+            ):
+                conversation["unread_count"] += 1
 
-        # ---------- 3) Convertir a lista y ORDENAR ----------
-        convs = list(conversations_map.values())
+        convs = list(direct_conversations.values())
+        for membership in memberships:
+            group = membership.group
+            activity = group_conversations.get(
+                group.id,
+                {
+                    "last_message": "",
+                    "last_timestamp": None,
+                    "last_sender_name": None,
+                    "last_message_type": "empty",
+                    "unread_count": 0,
+                },
+            )
+            convs.append(
+                {
+                    "id": group.id,
+                    "type": "group",
+                    "title": group.name,
+                    "image": None,
+                    **activity,
+                    "member_count": member_counts.get(group.id, 0),
+                    "created_by": group.created_by_id,
+                    "current_user_is_admin": membership.is_admin,
+                }
+            )
 
         for c in convs:
             ts = c["last_timestamp"]
@@ -205,17 +285,40 @@ def message_list(request):
     """
     if request.method == 'GET':
         user_id = request.query_params.get('user_id')
-        page = int(request.query_params.get('page', 1))
+        if not user_id:
+            return Response(
+                {"error": "user_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            other_user = User.objects.get(id=user_id)
+        except (User.DoesNotExist, ValidationError, ValueError):
+            return Response(
+                {"error": "User not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            page = max(int(request.query_params.get('page', 1)), 1)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Invalid page"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         page_size = 10
 
         try:
-            if user_id:
-                messages = Message.objects.filter(
-                    Q(sender_id=request.user.id, receiver_id=user_id) |
-                    Q(sender_id=user_id, receiver_id=request.user.id)
-                ).order_by('-timestamp')
-            else:
-                messages = Message.objects.all().order_by('-timestamp')
+            messages = Message.objects.filter(
+                Q(sender=request.user, receiver=other_user)
+                | Q(sender=other_user, receiver=request.user)
+            ).order_by('-timestamp')
+
+            Message.objects.filter(
+                sender=other_user,
+                receiver=request.user,
+                is_read=False,
+            ).update(is_read=True, read_at=timezone.now())
 
             start = (page - 1) * page_size
             end = start + page_size
@@ -302,13 +405,35 @@ def message_list(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_group(request):
-    name = request.data.get('name')
-    if not name:
-        return Response({'error': 'Group name is required'}, status=status.HTTP_400_BAD_REQUEST)
+    serializer = GroupCreateSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    group = Group.objects.create(name=name, created_by=request.user)
-    GroupMembership.objects.create(user=request.user, group=group, is_admin=True)
-    return Response(GroupSerializer(group).data, status=status.HTTP_201_CREATED)
+    member_users = {
+        member.id: member for member in serializer.validated_data.get("members", [])
+    }
+    member_users[request.user.id] = request.user
+
+    with transaction.atomic():
+        group = Group.objects.create(
+            name=serializer.validated_data["name"],
+            created_by=request.user,
+        )
+        GroupMembership.objects.bulk_create(
+            [
+                GroupMembership(
+                    user=member,
+                    group=group,
+                    is_admin=member.id == request.user.id,
+                )
+                for member in member_users.values()
+            ]
+        )
+
+    return Response(
+        GroupSerializer(group, context={"request": request}).data,
+        status=status.HTTP_201_CREATED,
+    )
 
 
 @api_view(['POST'])
@@ -406,7 +531,15 @@ def list_groups(request):
         .filter(user=request.user)
         .values_list('group_id', flat=True)
     )
-    groups = Group.objects.filter(id__in=group_ids).distinct()
+    groups = Group.objects.filter(id__in=group_ids).prefetch_related(
+        Prefetch(
+            "groupmembership_set",
+            queryset=GroupMembership.objects.select_related("user").order_by(
+                "joined_at", "id"
+            ),
+            to_attr="prefetched_memberships",
+        )
+    ).distinct()
     serializer = GroupSerializer(groups, many=True, context={'request': request})
     return Response(serializer.data)
 
@@ -415,12 +548,23 @@ def list_groups(request):
 @permission_classes([IsAuthenticated])
 def group_messages(request, group_id):
     group = get_object_or_404(Group, id=group_id)
-    if not GroupMembership.objects.filter(group=group, user=request.user).exists():
+    membership = GroupMembership.objects.filter(
+        group=group,
+        user=request.user,
+    ).first()
+    if membership is None:
         return Response({'error': 'You are not a member of this group'}, status=status.HTTP_403_FORBIDDEN)
 
-    messages = GroupMessage.objects.filter(group=group).order_by('-timestamp')
+    opened_at = timezone.now()
+    messages = GroupMessage.objects.filter(
+        group=group,
+        timestamp__lte=opened_at,
+    ).order_by('-timestamp')
     serializer = GroupMessageSerializer(messages, many=True, context={'request': request})
-    return Response(serializer.data)
+    data = serializer.data
+    membership.last_read_at = opened_at
+    membership.save(update_fields=["last_read_at"])
+    return Response(data)
 
 @api_view(['POST'])
 @parser_classes([JSONParser, MultiPartParser, FormParser])
