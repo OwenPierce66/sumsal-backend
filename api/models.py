@@ -134,6 +134,14 @@ class Task(TimeStampedModel):
     categories = models.TextField(blank=True, default="")
     image = models.ImageField(upload_to="tasks/", null=True, blank=True)
     video = models.FileField(upload_to="tasks/videos/", null=True, blank=True)
+    story_is_shared = models.BooleanField(default=False)
+    story_source_task = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="story_copies",
+    )
     share_count = models.PositiveIntegerField(default=0)
     interaction_score = models.IntegerField(default=0, help_text=_("Score for feed ranking"))
 

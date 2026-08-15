@@ -4,7 +4,9 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.db.models import Case, When, Value, IntegerField, CharField
 from django.conf import settings
+from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
+from datetime import timedelta
 
 from rest_framework import status, generics
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -72,6 +74,11 @@ class CommentPagination(LimitOffsetPagination):
     default_limit = 10
     max_limit = 50
 
+
+class StoriesPagination(LimitOffsetPagination):
+    default_limit = 60
+    max_limit = 100
+
 # ============================================================================
 # AUTENTICACIÓN Y USUARIOS
 # ============================================================================
@@ -104,7 +111,11 @@ class UserMyTasksView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
-        return ms.Task.objects.filter(user=self.request.user).order_by('-created_at')
+        return ms.Task.objects.filter(user=self.request.user).select_related(
+            "user"
+        ).prefetch_related(
+            "shared_instances__shared_by"
+        ).order_by('-created_at')
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -175,7 +186,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(user__profile__is_recommended=True)
             
         qs = qs.select_related("user").prefetch_related(
-            "likes", "post_comments", "subtasks", "subfuentes", "subfactores"
+            "likes", "post_comments", "subtasks", "subfuentes", "subfactores", "shared_instances__shared_by"
         )
         
         if sort_by == "likes":
@@ -184,6 +195,42 @@ class TaskListCreateView(generics.ListCreateAPIView):
             qs = qs.order_by('-created_at')
             
         return qs
+
+    def list(self, request, *args, **kwargs):
+        favorite_profile_ids = []
+        if request.user.is_authenticated:
+            favorite_profile_ids = list(
+                ms.pFavorito.objects.filter(user=request.user).values_list("perfil_id", flat=True)
+            )
+
+        print("[TaskListCreateView] list auth debug", {
+            "is_authenticated": bool(request.user and request.user.is_authenticated),
+            "request_user_id": str(request.user.id) if request.user.is_authenticated else None,
+            "request_user_username": getattr(request.user, "username", None) if request.user.is_authenticated else None,
+            "favorite_profile_ids": [str(profile_id) for profile_id in favorite_profile_ids],
+            "query_params": dict(request.query_params),
+        })
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page if page is not None else queryset, many=True)
+        payload = serializer.data
+
+        preview = payload[:5] if isinstance(payload, list) else payload.get("results", [])[:5]
+        print("[TaskListCreateView] list payload preview", [
+            {
+                "task_id": str(item.get("id")),
+                "shared_by_list_count": len(item.get("shared_by_list") or []),
+                "favorite_sharers_count": item.get("favorite_sharers_count"),
+                "favorite_shared_by": item.get("favorite_shared_by"),
+                "favorite_shared_by_list": item.get("favorite_shared_by_list"),
+            }
+            for item in preview
+        ])
+
+        if page is not None:
+            return self.get_paginated_response(payload)
+        return Response(payload)
     def post(self, request, *args, **kwargs):
         print("====== LLAVES RECIBIDAS DESDE REACT NATIVE ======")
         print(request.data.keys())
@@ -241,6 +288,63 @@ class TaskListCreateView(generics.ListCreateAPIView):
         # 3. Devolvemos el objeto completo
         full_serializer = self.get_serializer(task)
         return Response(full_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class StoryListCreateView(generics.ListCreateAPIView):
+    serializer_class = TaskSerializer
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    pagination_class = StoriesPagination
+
+    def get_queryset(self):
+        stories_window_start = timezone.now() - timedelta(hours=24)
+        media_filter = (
+            (Q(video__isnull=False) & ~Q(video=""))
+            | (Q(image__isnull=False) & ~Q(image=""))
+            | (Q(subtasks__video__isnull=False) & ~Q(subtasks__video=""))
+            | (Q(subtasks__image__isnull=False) & ~Q(subtasks__image=""))
+            | (Q(subfactores__video__isnull=False) & ~Q(subfactores__video=""))
+            | (Q(subfactores__image__isnull=False) & ~Q(subfactores__image=""))
+            | (Q(subfuentes__video__isnull=False) & ~Q(subfuentes__video=""))
+            | (Q(subfuentes__image__isnull=False) & ~Q(subfuentes__image=""))
+        )
+
+        return (
+            ms.Task.objects.filter(
+                pch="historias",
+                created_at__gte=stories_window_start,
+            )
+            .filter(media_filter)
+            .select_related("user")
+            .prefetch_related(
+                "likes",
+                "post_comments",
+                "subtasks",
+                "subfactores",
+                "subfuentes",
+                "shared_instances__shared_by",
+            )
+            .order_by("-created_at")
+            .distinct()
+        )
+
+    def create(self, request, *args, **kwargs):
+        incoming_data = request.data.copy()
+        caption_value = (incoming_data.get("caption") or "").strip()
+        if hasattr(incoming_data, "pop"):
+            incoming_data.pop("caption", None)
+        incoming_data["pch"] = "historias"
+        incoming_data["username"] = request.user.username or ""
+        if not incoming_data.get("description"):
+            incoming_data["description"] = caption_value
+        if not incoming_data.get("title"):
+            incoming_data["title"] = "Historia"
+
+        serializer = self.get_serializer(data=incoming_data)
+        serializer.is_valid(raise_exception=True)
+        story = serializer.save(user=request.user)
+        output = self.get_serializer(story)
+        return Response(output.data, status=status.HTTP_201_CREATED)
     
     
     
@@ -411,6 +515,94 @@ def repost_task(request, task_id):
 
     except ms.Task.DoesNotExist:
         return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def share_task_to_story(request):
+    source_task_id = request.data.get("task_id")
+    caption = (request.data.get("caption") or "").strip()
+    source_item_type = (request.data.get("source_item_type") or request.data.get("source_type") or "").strip()
+    source_item_id = request.data.get("source_item_id") or request.data.get("source_id")
+
+    if not source_task_id:
+        return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    source_task = get_object_or_404(ms.Task, id=source_task_id)
+
+    source_item = None
+    if source_item_type and source_item_id:
+        related_name = source_item_type.rstrip("s") if source_item_type.endswith("s") else source_item_type
+        normalized_type = {
+            "subtask": "subtasks",
+            "subtasks": "subtasks",
+            "subfactor": "subfactores",
+            "subfactores": "subfactores",
+            "subfuente": "subfuentes",
+            "subfuentes": "subfuentes",
+        }.get(str(source_item_type).lower(), str(source_item_type).lower())
+        related_manager = {
+            "subtasks": source_task.subtasks,
+            "subfactores": source_task.subfactores,
+            "subfuentes": source_task.subfuentes,
+        }.get(normalized_type)
+        if related_manager is not None:
+            source_item = related_manager.filter(id=source_item_id).first()
+
+    if not source_item:
+        for related_name in ["subtasks", "subfactores", "subfuentes"]:
+            manager = getattr(source_task, related_name, None)
+            if manager is None:
+                continue
+            candidates = manager.all().order_by("created_at")
+            chosen = next((item for item in candidates if item.image or item.video), None)
+            if chosen:
+                source_item = chosen
+                source_item_type = related_name
+                break
+
+    story_media = source_item if source_item and (source_item.image or source_item.video) else None
+    story_image = story_media.image if story_media and story_media.image else source_task.image
+    story_video = story_media.video if story_media and story_media.video else source_task.video
+
+    if not story_image and not story_video:
+        return Response(
+            {"error": "Solo se puede compartir a historia una tarea o subtarea con imagen o video."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    story_title = source_task.title or (source_item.title if source_item else "Historia compartida")
+    story_description = caption if caption else ((source_item.description if source_item and source_item.description else source_task.description) or "")
+
+    story = ms.Task.objects.create(
+        user=request.user,
+        username=(source_task.user.username if source_task.user else request.user.username) or request.user.username or "",
+        title=story_title,
+        description=story_description,
+        pch="historias",
+        categories=source_task.categories or "",
+        image=story_image,
+        video=story_video,
+        story_is_shared=True,
+        story_source_task=source_task,
+    )
+
+    serializer = TaskSerializer(story, context={"request": request})
+    response_data = serializer.data
+    response_data['source_task_id'] = str(source_task.id)
+    response_data['source_task_title'] = source_task.title or ""
+    response_data['source_task_user'] = source_task.user.username if source_task.user else ""
+    response_data['source_task_user_id'] = str(source_task.user_id) if source_task.user_id else None
+    response_data['source_task_description'] = source_task.description or ""
+    response_data['source_task_image'] = file_to_abs_url(source_task.image, request) if source_task.image else None
+    response_data['source_task_video'] = file_to_abs_url(source_task.video, request) if source_task.video else None
+    response_data['source_item_type'] = source_item_type or None
+    response_data['source_item_id'] = str(source_item.id) if source_item else None
+    response_data['source_item_title'] = source_item.title if source_item else ""
+    response_data['source_item_description'] = source_item.description if source_item else ""
+    response_data['source_item_image'] = file_to_abs_url(source_item.image, request) if source_item and source_item.image else None
+    response_data['source_item_video'] = file_to_abs_url(source_item.video, request) if source_item and source_item.video else None
+    return Response(response_data, status=status.HTTP_201_CREATED)
 
 # ============================================================================
 # FUNCIONES DE COMPATIBILIDAD URLS

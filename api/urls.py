@@ -21,6 +21,8 @@ urlpatterns = [
 
     # Tareas (Reels) y Feed
     path('tasks/', views.TaskListCreateView.as_view(), name='task-list-create'),
+    path('stories/', views.StoryListCreateView.as_view(), name='story-list-create'),
+    path('stories/share-task/', views.share_task_to_story, name='story-share-task'),
     path('feed/', views.FeedView.as_view(), name='feed'),
     path('tasks/<uuid:id>/', views.TaskDetailView.as_view(), name='task-detail'),
     path('tasks/<uuid:task_id>/like/', views.toggle_task_like, name='task-like'),

@@ -286,6 +286,9 @@ class TaskSerializer(serializers.ModelSerializer):
     is_favorited = serializers.SerializerMethodField()
     is_original = serializers.SerializerMethodField()
     shared_by_list = serializers.SerializerMethodField()
+    favorite_shared_by_list = serializers.SerializerMethodField()
+    favorite_shared_by = serializers.SerializerMethodField()
+    favorite_sharers_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
@@ -302,10 +305,110 @@ class TaskSerializer(serializers.ModelSerializer):
             return ms.Favorito.objects.filter(user=request.user, task=obj).exists()
         return False
 
+    def _get_share_img_cache(self):
+        if not hasattr(self, "_share_img_cache"):
+            self._share_img_cache = {}
+        return self._share_img_cache
+
+    def _get_sorted_shared_instances(self, obj):
+        if not hasattr(self, "_sorted_shared_instances_cache"):
+            self._sorted_shared_instances_cache = {}
+
+        task_key = str(obj.id)
+        if task_key not in self._sorted_shared_instances_cache:
+            shared_instances = list(obj.shared_instances.all())
+            shared_instances.sort(key=lambda share: (share.created_at, str(share.id)))
+            self._sorted_shared_instances_cache[task_key] = shared_instances
+        return self._sorted_shared_instances_cache[task_key]
+
+    def _serialize_shared_instance(self, share, request):
+        shared_by = share.shared_by
+        if not shared_by:
+            return {
+                "id": None,
+                "username": "unknown",
+                "description": share.description or "",
+                "user_image": None,
+            }
+
+        share_img_cache = self._get_share_img_cache()
+        if shared_by.id not in share_img_cache:
+            imagen_fija = ms.ImagenFija.objects.filter(user=shared_by).order_by("-id").first()
+            share_img_cache[shared_by.id] = file_to_abs_url(
+                imagen_fija.image if imagen_fija and imagen_fija.image else None,
+                request,
+            )
+
+        return {
+            "id": shared_by.id,
+            "username": getattr(shared_by, "username", "unknown"),
+            "description": share.description or "",
+            "user_image": share_img_cache[shared_by.id],
+        }
+
+    def _get_favorite_profile_ids(self):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            print("[TaskSerializer] favorite sharers auth missing", {
+                "has_request": bool(request),
+                "is_authenticated": bool(getattr(getattr(request, "user", None), "is_authenticated", False)),
+            })
+            return set()
+
+        if not hasattr(self, "_favorite_profile_ids_cache"):
+            self._favorite_profile_ids_cache = set(
+                ms.pFavorito.objects.filter(user=request.user).values_list("perfil_id", flat=True)
+            )
+            print("[TaskSerializer] favorite profile ids", {
+                "request_user_id": str(request.user.id),
+                "request_user_username": getattr(request.user, "username", None),
+                "favorite_profile_ids": [str(profile_id) for profile_id in self._favorite_profile_ids_cache],
+            })
+        return self._favorite_profile_ids_cache
+
+    def _get_favorite_shared_by_list(self, obj):
+        if not hasattr(self, "_favorite_shared_by_cache"):
+            self._favorite_shared_by_cache = {}
+
+        task_key = str(obj.id)
+        if task_key in self._favorite_shared_by_cache:
+            return self._favorite_shared_by_cache[task_key]
+
+        request = self.context.get("request")
+        favorite_profile_ids = self._get_favorite_profile_ids()
+        if not favorite_profile_ids:
+            self._favorite_shared_by_cache[task_key] = []
+            return self._favorite_shared_by_cache[task_key]
+
+        favorite_shared = []
+        for share in self._get_sorted_shared_instances(obj):
+            if share.shared_by_id in favorite_profile_ids:
+                favorite_shared.append(self._serialize_shared_instance(share, request))
+        print("[TaskSerializer] favorite sharers per task", {
+            "task_id": str(obj.id),
+            "shared_by_ids": [str(share.shared_by_id) for share in self._get_sorted_shared_instances(obj)],
+            "favorite_profile_ids": [str(profile_id) for profile_id in favorite_profile_ids],
+            "matched_favorite_sharer_ids": [str(item["id"]) for item in favorite_shared if item.get("id")],
+        })
+        self._favorite_shared_by_cache[task_key] = favorite_shared
+        return self._favorite_shared_by_cache[task_key]
+
     def get_shared_by_list(self, obj):
-        # Devuelve una lista de objetos de usuario simplificados que han compartido esta tarea.
-        shared_instances = ms.SharedTask.objects.filter(task=obj).select_related('shared_by')
-        return [SimpleUserSerializer(s.shared_by, context=self.context).data for s in shared_instances]
+        request = self.context.get("request")
+        return [
+            self._serialize_shared_instance(share, request)
+            for share in self._get_sorted_shared_instances(obj)
+        ]
+
+    def get_favorite_shared_by_list(self, obj):
+        return self._get_favorite_shared_by_list(obj)
+
+    def get_favorite_shared_by(self, obj):
+        favorite_shared = self._get_favorite_shared_by_list(obj)
+        return favorite_shared[-1] if favorite_shared else None
+
+    def get_favorite_sharers_count(self, obj):
+        return len(self._get_favorite_shared_by_list(obj))
 
     def _count_nested_comments(self, comment):
         """Cuenta un comentario y todas sus respuestas recursivamente"""
