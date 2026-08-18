@@ -113,6 +113,79 @@ class pFavoritoViewRegressionTests(TestCase):
         self.assertTrue(ms.pFavorito.objects.filter(user=viewer, perfil=target_user).exists())
 
 
+class TopicSubtopicFilterTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="topic-filter@example.com",
+            password="test-pass",
+            username="topic-filter",
+        )
+        self.matching_task = ms.Task.objects.create(
+            user=self.user,
+            pch="consejos",
+            title="React Native con Django",
+            categories="programacion,Django,React Native",
+        )
+        self.other_task = ms.Task.objects.create(
+            user=self.user,
+            pch="consejos",
+            title="Python",
+            categories="programacion,Python",
+        )
+        self.similar_task = ms.Task.objects.create(
+            user=self.user,
+            pch="consejos",
+            title="React web",
+            categories="programacion,React",
+        )
+        self.matching_share = ms.SharedTask.objects.create(
+            task=self.matching_task,
+            shared_by=self.user,
+        )
+        ms.SharedTask.objects.create(task=self.other_task, shared_by=self.user)
+        ms.SharedTask.objects.create(task=self.similar_task, shared_by=self.user)
+        self.client = APIClient()
+
+    def test_task_filter_requires_topic_and_every_selected_subtopic(self):
+        response = self.client.get(
+            reverse("task-list-create"),
+            {"pch": "consejos", "category": "programacion,React Native,Django"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results", response.data)
+        self.assertEqual(
+            [item["id"] for item in results],
+            [str(self.matching_task.id)],
+        )
+
+    def test_shared_task_filter_uses_original_task_subtopics(self):
+        response = self.client.get(
+            reverse("shared-task-list-create"),
+            {"category": "programacion,React Native"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results", response.data)
+        self.assertEqual(
+            [item["id"] for item in results],
+            [str(self.matching_share.id)],
+        )
+
+    def test_subtopic_filter_matches_complete_category_names(self):
+        response = self.client.get(
+            reverse("task-list-create"),
+            {"pch": "consejos", "category": "programacion,React"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results", response.data)
+        self.assertEqual(
+            [item["id"] for item in results],
+            [str(self.similar_task.id)],
+        )
+
+
 class StoryViewRegressionTests(TestCase):
     def setUp(self):
         self.viewer = User.objects.create_user(
@@ -168,7 +241,13 @@ class StoryViewRegressionTests(TestCase):
             reverse("story-list-create"),
             {
                 "caption": "Texto de historia",
-                "image": SimpleUploadedFile("upload.jpg", b"upload-image", content_type="image/jpeg"),
+                "image": SimpleUploadedFile(
+                    "upload.gif",
+                    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!"
+                    b"\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00"
+                    b"\x00\x02\x02D\x01\x00;",
+                    content_type="image/gif",
+                ),
                 "pch": "consejos",
             },
             format="multipart",
@@ -240,3 +319,195 @@ class StoryViewRegressionTests(TestCase):
         self.assertEqual(response.data["source_task_title"], source_task.title)
         self.assertEqual(response.data["source_item_title"], subtask.title)
         self.assertEqual(response.data["source_item_description"], subtask.description)
+
+
+class StoryViewTrackingTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email="view-owner@example.com",
+            password="pass",
+            username="view-owner",
+        )
+        self.viewer = User.objects.create_user(
+            email="view-viewer@example.com",
+            password="pass",
+            username="view-viewer",
+            first_name="View",
+            last_name="Viewer",
+        )
+        self.other = User.objects.create_user(
+            email="view-other@example.com",
+            password="pass",
+            username="view-other",
+        )
+        self.story = ms.Task.objects.create(
+            user=self.owner,
+            pch="historias",
+            title="Historia",
+        )
+        self.client = APIClient()
+
+    def test_record_view_is_unique_and_idempotent(self):
+        self.client.force_authenticate(user=self.viewer)
+        url = reverse("story-view", kwargs={"story_id": self.story.id})
+
+        first = self.client.post(url)
+        second = self.client.post(url)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertTrue(first.data["created"])
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.data["created"])
+        self.assertEqual(second.data["views_count"], 1)
+        self.assertEqual(ms.StoryView.objects.filter(story=self.story).count(), 1)
+
+    def test_owner_view_is_not_recorded(self):
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.post(
+            reverse("story-view", kwargs={"story_id": self.story.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["created"])
+        self.assertEqual(response.data["views_count"], 0)
+        self.assertFalse(ms.StoryView.objects.filter(story=self.story).exists())
+
+    def test_non_story_cannot_be_recorded_or_listed(self):
+        task = ms.Task.objects.create(
+            user=self.owner,
+            pch="consejos",
+            title="No historia",
+        )
+        self.client.force_authenticate(user=self.viewer)
+        self.assertEqual(
+            self.client.post(
+                reverse("story-view", kwargs={"story_id": task.id})
+            ).status_code,
+            404,
+        )
+        self.client.force_authenticate(user=self.owner)
+        self.assertEqual(
+            self.client.get(
+                reverse("story-viewers", kwargs={"story_id": task.id})
+            ).status_code,
+            404,
+        )
+
+    def test_only_owner_can_list_viewers(self):
+        ms.StoryView.objects.create(story=self.story, viewer=self.viewer)
+        self.client.force_authenticate(user=self.other)
+
+        response = self.client.get(
+            reverse("story-viewers", kwargs={"story_id": self.story.id})
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_viewers_contract_count_and_descending_order(self):
+        older = ms.StoryView.objects.create(story=self.story, viewer=self.viewer)
+        newer = ms.StoryView.objects.create(story=self.story, viewer=self.other)
+        ms.StoryView.objects.filter(pk=older.pk).update(
+            viewed_at=timezone.now() - timedelta(minutes=1)
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get(
+            reverse("story-viewers", kwargs={"story_id": self.story.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["views_count"], 2)
+        self.assertEqual(response.data["likes_count"], 0)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(len(response.data["users"]), 2)
+        self.assertEqual(response.data["users"][0]["id"], str(newer.viewer_id))
+        self.viewer.profile.is_verified = True
+        self.viewer.profile.save(update_fields=["is_verified"])
+        response = self.client.get(
+            reverse("story-viewers", kwargs={"story_id": self.story.id})
+        )
+        viewer_data = next(
+            user for user in response.data["users"]
+            if user["id"] == str(self.viewer.id)
+        )
+        self.assertTrue(viewer_data["profile"]["is_verified"])
+        self.assertTrue(
+            {
+                "id",
+                "username",
+                "name",
+                "image",
+                "user_image",
+                "profile",
+                "viewed",
+                "liked",
+                "viewed_at",
+                "liked_at",
+            }
+            <= set(response.data["users"][1])
+        )
+        self.assertTrue(response.data["users"][1]["viewed"])
+        self.assertFalse(response.data["users"][1]["liked"])
+        self.assertIsNone(response.data["users"][1]["liked_at"])
+        self.assertEqual(response.data["users"][1]["name"], "View Viewer")
+
+    def test_viewer_and_liker_are_combined_without_duplicates(self):
+        story_view = ms.StoryView.objects.create(
+            story=self.story,
+            viewer=self.viewer,
+        )
+        like = ms.Like.objects.create(task=self.story, user=self.viewer)
+        ms.ImagenFija.objects.create(
+            user=self.viewer,
+            image="fixed/story-viewer.jpg",
+        )
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get(
+            reverse("story-viewers", kwargs={"story_id": self.story.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["views_count"], 1)
+        self.assertEqual(response.data["likes_count"], 1)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(len(response.data["users"]), 1)
+        user = response.data["users"][0]
+        self.assertTrue(user["viewed"])
+        self.assertTrue(user["liked"])
+        self.assertEqual(user["viewed_at"], story_view.viewed_at)
+        self.assertEqual(user["liked_at"], like.created_at)
+        self.assertEqual(
+            user["image"],
+            "http://testserver/media/fixed/story-viewer.jpg",
+        )
+        self.assertEqual(user["user_image"], user["image"])
+
+    def test_legacy_like_without_story_view_is_included(self):
+        like = ms.Like.objects.create(task=self.story, user=self.other)
+        self.client.force_authenticate(user=self.owner)
+
+        response = self.client.get(
+            reverse("story-viewers", kwargs={"story_id": self.story.id})
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["views_count"], 0)
+        self.assertEqual(response.data["likes_count"], 1)
+        self.assertEqual(response.data["count"], 1)
+        user = response.data["users"][0]
+        self.assertEqual(user["id"], str(self.other.id))
+        self.assertFalse(user["viewed"])
+        self.assertTrue(user["liked"])
+        self.assertIsNone(user["viewed_at"])
+        self.assertEqual(user["liked_at"], like.created_at)
+
+    def test_story_serializer_exposes_views_count_not_likes(self):
+        ms.StoryView.objects.create(story=self.story, viewer=self.viewer)
+        ms.Like.objects.create(task=self.story, user=self.other)
+
+        data = TaskSerializer(self.story).data
+
+        self.assertEqual(data["views_count"], 1)
+        self.assertEqual(data["likes_count"], 1)

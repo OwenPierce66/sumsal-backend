@@ -16,6 +16,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticate
 from rest_framework.pagination import PageNumberPagination, LimitOffsetPagination
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
+import re
 
 from .serializers import ProfileSerializer, file_to_abs_url
 from .serializers import (
@@ -41,6 +42,23 @@ from . import throttling as ts
 from django.db.models import F
 
 User = get_user_model()
+
+
+def filter_by_categories(queryset, category_filter, field_name):
+    categories = []
+    seen = set()
+    for raw_category in (category_filter or "").split(","):
+        category = raw_category.strip()
+        normalized = category.casefold()
+        if category and normalized not in seen:
+            categories.append(category)
+            seen.add(normalized)
+
+    for category in categories:
+        pattern = rf"(?:^|,)\s*{re.escape(category)}\s*(?:,|$)"
+        queryset = queryset.filter(**{f"{field_name}__iregex": pattern})
+    return queryset
+
 
 # ============================================================================
 # CONFIGURACIÓN DE PAGINACIÓN
@@ -169,7 +187,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=30))
             
         if category:
-            qs = qs.filter(categories__icontains=category)
+            qs = filter_by_categories(qs, category, "categories")
             
         if favorites_only in ['true', '1', 'True', True]:
             if user_id:
@@ -316,6 +334,7 @@ class StoryListCreateView(generics.ListCreateAPIView):
                 created_at__gte=stories_window_start,
             )
             .filter(media_filter)
+            .annotate(views_count=Count("story_views", distinct=True))
             .select_related("user")
             .prefetch_related(
                 "likes",
@@ -373,6 +392,106 @@ def toggle_task_like(request, task_id):
         like.delete()
         return Response({"liked": False, "likes_count": task.likes.count()})
     return Response({"liked": True, "likes_count": task.likes.count()}, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def record_story_view(request, story_id):
+    story = get_object_or_404(ms.Task, id=story_id, pch="historias")
+    created = False
+    if story.user_id != request.user.id:
+        _, created = ms.StoryView.objects.get_or_create(
+            story=story,
+            viewer=request.user,
+        )
+
+    return Response({
+        "created": created,
+        "views_count": story.story_views.count(),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def story_viewers(request, story_id):
+    story = get_object_or_404(ms.Task, id=story_id, pch="historias")
+    if story.user_id != request.user.id:
+        return Response(
+            {"detail": "No tienes permiso para ver las visualizaciones de esta historia."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    latest_viewer_image = ms.ImagenFija.objects.filter(
+        user_id=OuterRef("viewer_id")
+    ).order_by("-created_at").values("image")[:1]
+    views = list(
+        story.story_views.select_related("viewer", "viewer__profile")
+        .annotate(activity_image=Subquery(latest_viewer_image))
+        .order_by("-viewed_at")
+    )
+
+    latest_liker_image = ms.ImagenFija.objects.filter(
+        user_id=OuterRef("user_id")
+    ).order_by("-created_at").values("image")[:1]
+    likes = list(
+        story.likes.select_related("user", "user__profile")
+        .annotate(activity_image=Subquery(latest_liker_image))
+        .order_by("-created_at")
+    )
+
+    users_by_id = {}
+
+    def activity_user(user, image_value):
+        user_id = str(user.id)
+        if user_id not in users_by_id:
+            full_name = " ".join(
+                part for part in (user.first_name, user.last_name) if part
+            )
+            image = file_to_abs_url(image_value, request)
+            users_by_id[user_id] = {
+                "id": user_id,
+                "username": user.username,
+                "name": full_name or user.username or user.email,
+                "image": image,
+                "user_image": image,
+                "profile": ProfileSerializer(user.profile).data,
+                "viewed": False,
+                "liked": False,
+                "viewed_at": None,
+                "liked_at": None,
+                "_activity_at": None,
+            }
+        return users_by_id[user_id]
+
+    for story_view in views:
+        viewer = story_view.viewer
+        item = activity_user(viewer, story_view.activity_image)
+        item["viewed"] = True
+        item["viewed_at"] = story_view.viewed_at
+        item["_activity_at"] = story_view.viewed_at
+
+    for like in likes:
+        item = activity_user(like.user, like.activity_image)
+        item["liked"] = True
+        item["liked_at"] = like.created_at
+        if item["_activity_at"] is None or like.created_at > item["_activity_at"]:
+            item["_activity_at"] = like.created_at
+
+    users = sorted(
+        users_by_id.values(),
+        key=lambda item: (item["_activity_at"], item["id"]),
+        reverse=True,
+    )
+    for item in users:
+        item.pop("_activity_at")
+
+    return Response({
+        "views_count": len(views),
+        "likes_count": len(likes),
+        "count": len(users),
+        "users": users,
+    })
+
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -711,7 +830,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=30))
             
         if category:
-            qs = qs.filter(task__categories__icontains=category)
+            qs = filter_by_categories(qs, category, "task__categories")
             
         if favorites_only in ['true', '1', 'True', True]:
             qs = qs.filter(task__favorited_by__user=self.request.user)

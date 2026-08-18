@@ -276,6 +276,7 @@ class SubFuentesSerializer(serializers.ModelSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     user = SimpleUserSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
+    views_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     # ✅ FIX: Especificamos que el campo 'comments' debe leer de la relación 'post_comments' del modelo Task.
@@ -420,6 +421,14 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def get_likes_count(self, obj):
         return obj.likes.count()
+
+    def get_views_count(self, obj):
+        if obj.pch != "historias":
+            return 0
+        annotated_count = getattr(obj, "views_count", None)
+        if annotated_count is not None:
+            return annotated_count
+        return obj.story_views.count()
 
     def get_user_has_liked(self, obj):
         request = self.context.get("request")

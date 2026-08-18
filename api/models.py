@@ -212,6 +212,31 @@ class Like(TimeStampedModel):
         unique_together = ("user", "task")
 
 
+class StoryView(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    story = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="story_views")
+    viewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="story_views",
+    )
+    viewed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["story", "viewer"],
+                name="story_view_story_viewer_uniq",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["story", "-viewed_at"],
+                name="story_view_story_date_idx",
+            )
+        ]
+
+
 class LikeP(models.Model):
     """Likes entre perfiles"""
     # ✅ FIX DEFINITIVO: Cambiamos la relación de Profile a User.
