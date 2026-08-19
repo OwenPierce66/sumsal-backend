@@ -51,12 +51,22 @@ class ProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
 
+class ImagenFijaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ms.ImagenFija
+        fields = ["id", "image", "user", "created_at"]
+        read_only_fields = ["id", "user", "created_at"]
+
+    def create(self, validated_data):
+        validated_data["user"] = self.context["request"].user
+        return super().create(validated_data)
+
+
 class UserSerializer(serializers.ModelSerializer):
     profile = ProfileSerializer(read_only=True)
-    password = serializers.CharField(
-        write_only=True, required=True, style={"input_type": "password"}
-    )
-
+    password = serializers.CharField(write_only=True, required=False, style={"input_type": "password"})
+    user_image = serializers.ImageField(write_only=True, required=False)
+    
     class Meta:
         model = User
         fields = [
@@ -67,6 +77,7 @@ class UserSerializer(serializers.ModelSerializer):
             "last_name",
             "password",
             "profile",
+            "user_image",
             "is_superuser",
             "is_staff",
             "date_joined",
@@ -86,6 +97,15 @@ class UserSerializer(serializers.ModelSerializer):
         user.set_password(password)
         user.save()
         return user
+
+    def update(self, instance, validated_data):
+        password = validated_data.pop("password", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if password:
+            instance.set_password(password)
+        instance.save()
+        return instance
 
 
 # ============================================================================

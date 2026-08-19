@@ -56,6 +56,11 @@ urlpatterns = [
     path('shared-tasks/<uuid:shared_task_id>/comments/<int:comment_id>/like/', views.toggle_shared_task_comment_like, name='shared-task-comment-like'),
     path('shared-tasks/comments/<int:comment_id>/users-who-liked/', views.users_who_liked_shared_comment, name='shared-task-comment-likers'),
 
+    # Foro
+    path('posts/', views.PostListCreateView.as_view(), name='post-list-create'),
+    path('posts/<int:id>/', views.PostDetailView.as_view(), name='post-detail'),
+    path('posts/<int:post_id>/like/', views.toggle_post_like, name='post-like'),
+
     # Perfiles y Likes de Perfil
     path('profiles/<uuid:profile_id>/like/', views.like_unlike_profile, name='profile-like'),
     path('profiles/<uuid:profile_id>/likes/', views.list_likes, name='profile-likers'),

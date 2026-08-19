@@ -1,3 +1,5 @@
+import base64
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
@@ -12,6 +14,145 @@ from api.views import SharedTaskListCreateView
 from api.serializers import SharedTaskSerializer, TaskSerializer
 
 User = get_user_model()
+
+
+class UserMeViewRegressionTests(TestCase):
+    def test_patch_profile_with_image(self):
+        user = User.objects.create_user(
+            email="profile@example.com",
+            password="testpass123",
+            username="profile-user",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        image = SimpleUploadedFile(
+            "profile.png",
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ),
+            content_type="image/png",
+        )
+
+        response = client.patch(
+            reverse("user-me"),
+            {"first_name": "Updated", "user_image": image},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        user.refresh_from_db()
+        self.assertEqual(user.first_name, "Updated")
+        self.assertEqual(ms.ImagenFija.objects.filter(user=user).count(), 1)
+
+        refreshed_response = client.get(reverse("user-me"))
+        self.assertEqual(refreshed_response.status_code, 200)
+        self.assertIn("/media/", refreshed_response.data["user_image"])
+
+
+class TaskUpdateRegressionTests(TestCase):
+    def test_owner_can_patch_task_fields(self):
+        user = User.objects.create_user(
+            email="task-owner@example.com",
+            password="testpass123",
+            username="task-owner",
+        )
+        task = ms.Task.objects.create(
+            user=user,
+            title="Título original",
+            description="Descripción original",
+            pch="consejos",
+            categories="React",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        response = client.patch(
+            reverse("task-detail", kwargs={"id": task.id}),
+            {
+                "title": "Título actualizado",
+                "description": "Descripción actualizada",
+                "pch": "peticiones",
+                "categories": "Django,React Native",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        task.refresh_from_db()
+        self.assertEqual(task.title, "Título actualizado")
+        self.assertEqual(task.description, "Descripción actualizada")
+        self.assertEqual(task.pch, "peticiones")
+        self.assertEqual(task.categories, "Django,React Native")
+
+    def test_owner_can_patch_nested_task_blocks(self):
+        user = User.objects.create_user(
+            email="nested-owner@example.com",
+            password="testpass123",
+            username="nested-owner",
+        )
+        task = ms.Task.objects.create(user=user, title="Tarea")
+        subtask = ms.SubTask.objects.create(
+            parent_task=task,
+            title="Aportación original",
+            description="Descripción original",
+        )
+        ms.SubFactores.objects.create(parent_task=task, title="Factor para borrar")
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        response = client.patch(
+            reverse("task-detail", kwargs={"id": task.id}),
+            {
+                "subtasks": [{
+                    "id": subtask.id,
+                    "title": "Aportación actualizada",
+                    "description": "Descripción actualizada",
+                }],
+                "subfactores": [],
+                "subfuentes": [{"title": "Fuente nueva", "description": "Contenido"}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        subtask.refresh_from_db()
+        self.assertEqual(subtask.title, "Aportación actualizada")
+        self.assertFalse(ms.SubFactores.objects.filter(parent_task=task).exists())
+        self.assertEqual(ms.SubFuentes.objects.filter(parent_task=task).count(), 1)
+
+    def test_owner_can_patch_nested_block_image(self):
+        user = User.objects.create_user(
+            email="media-owner@example.com",
+            password="testpass123",
+            username="media-owner",
+        )
+        task = ms.Task.objects.create(user=user, title="Tarea con media")
+        subtask = ms.SubTask.objects.create(parent_task=task, title="Bloque")
+        image = SimpleUploadedFile(
+            "updated.png",
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+            ),
+            content_type="image/png",
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        response = client.patch(
+            reverse("task-detail", kwargs={"id": task.id}),
+            {
+                "subtasks[0][id]": str(subtask.id),
+                "subtasks[0][title]": "Bloque con imagen",
+                "subtasks[0][description]": "Descripción",
+                "subtasks[0][image]": image,
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        subtask.refresh_from_db()
+        self.assertTrue(bool(subtask.image))
+        self.assertTrue(subtask.image.name.endswith("updated.png"))
 
 
 class SharedTaskViewRegressionTests(TestCase):

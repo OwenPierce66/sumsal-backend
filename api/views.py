@@ -6,6 +6,7 @@ from django.db.models import Case, When, Value, IntegerField, CharField
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import ValidationError
 from datetime import timedelta
 
 from rest_framework import status, generics
@@ -17,6 +18,7 @@ from rest_framework.pagination import PageNumberPagination, LimitOffsetPaginatio
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 import re
+import json
 
 from .serializers import ProfileSerializer, file_to_abs_url
 from .serializers import (
@@ -120,9 +122,51 @@ class RegisterView(generics.CreateAPIView):
 
 class UserMeView(APIView):
     permission_classes = [IsAuthenticated]
+    # ⚡ AÑADIMOS PARSERS PARA ACEPTAR IMÁGENES (multipart/form-data)
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
     def get(self, request):
-        serializer = UserSerializer(request.user, context={'request': request})
+        serializer = SimpleUserSerializer(request.user, context={'request': request})
         return Response(serializer.data)
+
+    def patch(self, request, *args, **kwargs):
+        """
+        Permite a un usuario actualizar su propio perfil (nombre, apellido, imagen).
+        """
+        print("\n[DEBUG] --- Petición PATCH a /api/users/me/ ---")
+        print(f"[DEBUG] Usuario: {request.user.email}")
+        print(f"[DEBUG] Content-Type: {request.content_type}")
+        print(f"[DEBUG] Datos recibidos (request.data): {request.data}")
+        print(f"[DEBUG] Archivos recibidos (request.FILES): {request.FILES}")
+
+        user = request.user
+        
+        image_file = request.FILES.get('user_image')
+        if image_file:
+            print(f"[DEBUG] Archivo de imagen encontrado: {image_file.name}")
+        else:
+            print("[DEBUG] No se encontró 'user_image' en request.FILES.")
+
+        # La imagen se valida y guarda por separado para no volver a validar
+        # el archivo después de que Django ya lo haya consumido.
+        profile_data = request.data.copy()
+        profile_data.pop('user_image', None)
+        print(f"[DEBUG] Datos de usuario a pasar al serializador: {profile_data}")
+
+        with transaction.atomic():
+            serializer = UserSerializer(
+                user,
+                data=profile_data,
+                partial=True,
+                context={'request': request},
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            if image_file:
+                ms.ImagenFija.objects.create(user=user, image=image_file)
+                print("[DEBUG] Objeto ImagenFija creado en la base de datos.")
+
+        return Response(SimpleUserSerializer(user, context={'request': request}).data)
 
 class UserMyTasksView(generics.ListAPIView):
     serializer_class = TaskSerializer
@@ -373,6 +417,88 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
     lookup_field = "id"
+
+    def perform_update(self, serializer):
+        if serializer.instance.user != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para editar esta tarea.")
+        task = serializer.save()
+        print("[TaskDetailView] task updated", {
+            "task_id": str(task.id),
+            "user_id": str(self.request.user.id),
+            "fields": list(serializer.validated_data.keys()),
+        })
+        block_models = {
+            "subtasks": ms.SubTask,
+            "subfactores": ms.SubFactores,
+            "subfuentes": ms.SubFuentes,
+        }
+
+        for field_name, block_model in block_models.items():
+            has_json_blocks = field_name in self.request.data
+            has_multipart_blocks = any(
+                key.startswith(f"{field_name}[") for key in self.request.data.keys()
+            )
+            if not has_json_blocks and not has_multipart_blocks:
+                continue
+
+            if has_json_blocks:
+                blocks = self.request.data.get(field_name) or []
+                if isinstance(blocks, str):
+                    try:
+                        blocks = json.loads(blocks)
+                    except (TypeError, ValueError):
+                        raise ValidationError({field_name: "Formato de bloques inválido."})
+            else:
+                blocks = []
+                for index in range(20):
+                    prefix = f"{field_name}[{index}]"
+                    block = {
+                        "id": self.request.data.get(f"{prefix}[id]"),
+                        "title": self.request.data.get(f"{prefix}[title]", ""),
+                        "description": self.request.data.get(f"{prefix}[description]", ""),
+                        "image_file": self.request.FILES.get(f"{prefix}[image]"),
+                        "video_file": self.request.FILES.get(f"{prefix}[video]"),
+                    }
+                    if any((block["id"], block["title"], block["description"], block["image_file"], block["video_file"])):
+                        blocks.append(block)
+
+            kept_ids = set()
+            for block_data in blocks:
+                block_id = block_data.get("id")
+                values = {
+                    "title": (block_data.get("title") or "").strip(),
+                    "description": block_data.get("description") or "",
+                }
+                image_file = block_data.get("image_file")
+                video_file = block_data.get("video_file")
+                if block_id:
+                    block = get_object_or_404(block_model, id=block_id, parent_task=task)
+                    for field, value in values.items():
+                        setattr(block, field, value)
+                    update_fields = list(values)
+                    if image_file:
+                        block.image = image_file
+                        update_fields.append("image")
+                    if video_file:
+                        block.video = video_file
+                        update_fields.append("video")
+                    block.save(update_fields=update_fields)
+                    kept_ids.add(block.id)
+                elif values["title"] or values["description"]:
+                    create_values = {**values}
+                    if image_file:
+                        create_values["image"] = image_file
+                    if video_file:
+                        create_values["video"] = video_file
+                    block = block_model.objects.create(parent_task=task, **create_values)
+                    kept_ids.add(block.id)
+
+            block_model.objects.filter(parent_task=task).exclude(id__in=kept_ids).delete()
+            print("[TaskDetailView] nested blocks synced", {
+                "task_id": str(task.id),
+                "field": field_name,
+                "kept_ids": [str(block_id) for block_id in kept_ids],
+            })
 
     def perform_destroy(self, instance):
         if instance.user != self.request.user and not self.request.user.is_staff:
@@ -1296,8 +1422,8 @@ def toggle_post_like(request, post_id):
 
 class SharedTaskDetailView(generics.RetrieveAPIView):
     """Obtiene el detalle de una tarea compartida con comentarios"""
-class SharedTaskDetailView(generics.RetrieveDestroyAPIView):
-    """Obtiene el detalle de una tarea compartida con comentarios o la elimina"""
+class SharedTaskDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Obtiene, actualiza o elimina una tarea compartida."""
     queryset = ms.SharedTask.objects.all()
     serializer_class = SharedTaskDetailSerializer
     permission_classes = [IsAuthenticated]
@@ -1310,6 +1436,11 @@ class SharedTaskDetailView(generics.RetrieveDestroyAPIView):
         if instance.shared_by != self.request.user and not self.request.user.is_staff:
             raise PermissionDenied("No tienes permiso para eliminar esta publicación compartida.")
         instance.delete()
+
+    def perform_update(self, serializer):
+        if serializer.instance.shared_by != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para editar esta publicación compartida.")
+        serializer.save()
 
 
 class SharedTaskCommentListCreateView(generics.ListCreateAPIView):
