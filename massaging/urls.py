@@ -18,4 +18,5 @@ urlpatterns = [
     path('messages/<int:message_id>/delete/', delete_message, name='delete-message'),
     path('messages/<int:message_id>/', update_message, name='update-message'),
     path('group_messages/<int:message_id>/delete/', delete_group_message, name='delete-group-message'),
+    path('group_messages/<int:message_id>/', update_group_message, name='update-group-message'),
 ]

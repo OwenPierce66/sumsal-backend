@@ -94,6 +94,22 @@ def delete_group_message(request, message_id):
     return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@api_view(['PATCH'])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+@permission_classes([IsAuthenticated])
+def update_group_message(request, message_id):
+    message = get_object_or_404(GroupMessage, id=message_id)
+    if message.sender != request.user:
+        return Response(
+            {'error': 'Solo puedes editar tus propios mensajes.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if 'content' in request.data:
+        message.content = request.data.get('content', '').strip()
+    message.save(update_fields=['content'])
+    return Response(GroupMessageSerializer(message, context={'request': request}).data)
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def delete_group(request, group_id):
