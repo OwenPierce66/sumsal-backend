@@ -185,7 +185,10 @@ class UserMyTasksView(generics.ListAPIView):
 def list_users(request):
     users = User.objects.all().select_related("profile")
     serializer = SimpleUserSerializer(users, many=True, context={"request": request})
-    return Response(serializer.data)
+    return Response({
+        "users": serializer.data,
+        "is_admin": request.user.is_staff or request.user.is_superuser
+    })
 
 # ============================================================================
 # TAREAS Y PETICIONES
@@ -1177,7 +1180,16 @@ def obtener_imagen_fija_usuario(request, user_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_user_details(request):
-    return Response(UserSerializer(request.user, context={'request': request}).data)
+    # ✅ DEBUG: Imprime los datos del usuario en la terminal del backend
+    print(f"[DEBUG] get_user_details para: {request.user.username}, is_staff: {request.user.is_staff}, is_superuser: {request.user.is_superuser}")
+    # 1. Obtenemos los datos base del serializador
+    user_data = UserSerializer(request.user, context={'request': request}).data
+    # 2. Añadimos los campos de admin
+    user_data['is_staff'] = request.user.is_staff
+    user_data['is_superuser'] = request.user.is_superuser
+    
+    print(f"[DEBUG] Enviando user_data: {user_data}")
+    return Response(user_data) # 3. Enviamos la respuesta completa
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
