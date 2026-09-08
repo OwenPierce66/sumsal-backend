@@ -11,12 +11,39 @@ from rest_framework.test import APIClient
 
 from api import models as ms
 from api.views import SharedTaskListCreateView
-from api.serializers import SharedTaskSerializer, TaskSerializer
+from api.serializers import SimpleUserSerializer, SharedTaskSerializer, TaskSerializer
 
 User = get_user_model()
 
 
 class UserMeViewRegressionTests(TestCase):
+    def test_admin_role_is_restored_and_exposed_in_user_profile(self):
+        admin = User.objects.create_user(
+            email="admin-role@example.com",
+            password="testpass123",
+            username="admin-role",
+        )
+        profile = ms.Profile.objects.get(user=admin)
+        profile.role = 3
+        profile.save(update_fields=["role", "updated_at"])
+
+        admin.is_staff = True
+        admin.is_superuser = True
+        admin.save(update_fields=["is_staff", "is_superuser"])
+
+        serialized = SimpleUserSerializer(admin).data
+
+        self.assertTrue(serialized["is_staff"])
+        self.assertTrue(serialized["is_superuser"])
+
+        client = APIClient()
+        client.force_authenticate(user=admin)
+        response = client.get(reverse("user-me"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["is_staff"])
+        self.assertTrue(response.data["is_superuser"])
+
     def test_patch_profile_with_image(self):
         user = User.objects.create_user(
             email="profile@example.com",

@@ -9,6 +9,11 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
+# Etiqueta reservada de aprobación (podcasts/peticiones). Solo staff puede ponerla.
+APPROVED_TAG = "aprobada"
+# Categoría que convierte una publicación en propuesta de podcast.
+PODCAST_CATEGORY = "Grabar Podcast"
+
 # ============================================================================
 # CLASES BASE Y GESTIÓN DE USUARIOS
 # ============================================================================
@@ -137,28 +142,60 @@ class Notification(TimeStampedModel):
         return f"{self.notification_type} for {self.recipient_id}"
 
 
+class UserSavedFilter(TimeStampedModel):
+    """Filtro propio guardado por el usuario en su perfil (CRUD).
+    `filters` guarda en un solo campo JSON el mismo payload que produce
+    el modal de filtros (category, status, date_filter, sort_by, etc.),
+    para poder reaplicarlo sin tener que renderizar todas las tareas."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="saved_filters",
+    )
+    name = models.CharField(_("name"), max_length=120)
+    filters = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        unique_together = ("user", "name")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.name} ({self.user_id})"
+
+
 # ============================================================================
 # CONTENIDO Y CATEGORÍAS
 # ============================================================================
 
 class NewCategory(models.Model):
-    name = models.CharField(_("name"), max_length=100, unique=True)
+    name = models.CharField(_("name"), max_length=100)
+    # Vacío = categoría global (visible en todos los tipos de aportación).
+    pch = models.CharField(
+        _("pch"), max_length=20, blank=True, default="",
+        help_text=_("Tipo de aportación dueño de esta categoría (consejos/peticiones/historias)"),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         verbose_name_plural = "New Categories"
+        unique_together = ("name", "pch")
 
     def __str__(self):
         return self.name
 
 
 class CategoryP(models.Model):
+    """Filtro personal del usuario: categorías propias derivadas de sus tareas,
+    guardadas aparte (CRUD) para consultarlas sin renderizar todas las tareas."""
     name = models.CharField(_("name"), max_length=100)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="categoriesp")
+    position = models.PositiveIntegerField(_("position"), default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         unique_together = ("user", "name")
+        ordering = ["position", "created_at"]
 
     def __str__(self):
         return f"{self.name} ({self.user.email})"
@@ -277,6 +314,53 @@ class SharedTask(TimeStampedModel):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="shared_instances")
     shared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shares")
     description = models.TextField(blank=True, default="")
+
+
+class TaskTag(TimeStampedModel):
+    """Personas etiquetadas en una tarea/publicación (tag común de redes sociales)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="tagged_users")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="tagged_in_tasks",
+    )
+    tagged_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="tags_made",
+    )
+
+    class Meta:
+        unique_together = ("task", "user")
+
+    def __str__(self):
+        return f"{self.user_id} tagged in {self.task_id}"
+
+
+class PodcastInvitation(TimeStampedModel):
+    """Respuesta individual de una persona invitada a un podcast aprobado."""
+    STATUS_PENDING = "pending"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_DECLINED = "declined"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pendiente"),
+        (STATUS_ACCEPTED, "Aceptada"),
+        (STATUS_DECLINED, "Rechazada"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="podcast_invitations")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="podcast_invitations",
+    )
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ("task", "user")
 
 
 # ============================================================================

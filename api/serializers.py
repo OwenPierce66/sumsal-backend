@@ -6,6 +6,9 @@ from . import models as ms
 
 User = get_user_model()
 
+# Slug de la etiqueta de aprobación (espejo de ms.APPROVED_TAG).
+APPROVED_TAG = "aprobada"
+
 
 def file_to_abs_url(file_or_str, request=None):
     """Convierte FieldFile o string a URL absoluta"""
@@ -115,15 +118,76 @@ class UserSerializer(serializers.ModelSerializer):
 class NewCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.NewCategory
-        fields = ["id", "name", "created_at"]
+        fields = ["id", "name", "pch", "created_at"]
         read_only_fields = ["id", "created_at"]
+
+    def validate(self, attrs):
+        """Solo se rechaza si el mismo nombre ya existe DENTRO del mismo PCH."""
+        name = str(attrs.get("name") or "").strip()
+        pch = str(attrs.get("pch") or "").strip()
+        request = self.context.get("request")
+        is_admin = bool(
+            request and request.user.is_authenticated
+            and (request.user.is_staff or request.user.is_superuser)
+        )
+        if name.casefold() == ms.APPROVED_TAG.casefold() and not is_admin:
+            raise serializers.ValidationError({
+                "name": "La categoría 'aprobada' solo puede crearla un administrador."
+            })
+        if name:
+            qs = ms.NewCategory.objects.filter(name__iexact=name, pch__iexact=pch)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    "name": f"La categoría '{name}' ya existe en este tema."
+                })
+        attrs["name"] = name
+        attrs["pch"] = pch
+        return attrs
 
 
 class CategoryPSerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.CategoryP
-        fields = ["id", "name", "user", "created_at"]
+        fields = ["id", "name", "user", "position", "created_at"]
         read_only_fields = ["id", "user", "created_at"]
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("El filtro necesita un nombre.")
+        if value.casefold() == APPROVED_TAG.casefold():
+            raise serializers.ValidationError(
+                "La etiqueta 'aprobada' es exclusiva de administradores, no puede usarse en tu filtro personal."
+            )
+        return value
+
+    def create(self, validated_data):
+        user = self.context["request"].user
+        validated_data["user"] = user
+        if "position" not in validated_data:
+            last = ms.CategoryP.objects.filter(user=user).order_by("-position").first()
+            validated_data["position"] = (last.position + 1) if last else 0
+        return super().create(validated_data)
+
+
+class UserSavedFilterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ms.UserSavedFilter
+        fields = ["id", "name", "filters", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("El filtro necesita un nombre.")
+        return value
+
+    def validate_filters(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("El filtro debe ser un objeto de criterios.")
+        return value
 
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
@@ -150,6 +214,8 @@ class SimpleUserSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "profile",
+            "is_superuser",
+            "is_staff",
             "likes_count",
             "user_image",
             "has_liked",
@@ -310,6 +376,8 @@ class TaskSerializer(serializers.ModelSerializer):
     favorite_shared_by_list = serializers.SerializerMethodField()
     favorite_shared_by = serializers.SerializerMethodField()
     favorite_sharers_count = serializers.SerializerMethodField()
+    tagged_users = serializers.SerializerMethodField()
+    podcast_invitation_status = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
@@ -319,6 +387,53 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_is_original(self, obj):
         # Por defecto, si serializamos una Task directamente, es original.
         return True
+
+    def get_tagged_users(self, obj):
+        return [
+            {
+                "id": str(tag.user.id),
+                "username": getattr(tag.user, "username", None),
+                "first_name": getattr(tag.user, "first_name", "") or "",
+                "last_name": getattr(tag.user, "last_name", "") or "",
+            }
+            for tag in obj.tagged_users.all()
+        ]
+
+    def get_podcast_invitation_status(self, obj):
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+        invitation = obj.podcast_invitations.filter(user=request.user).first()
+        return invitation.status if invitation else None
+
+    def validate(self, attrs):
+        """La etiqueta reservada 'aprobada' solo la puede poner o quitar el staff."""
+        if "categories" in attrs:
+            request = self.context.get("request")
+            user = getattr(request, "user", None)
+            is_admin = bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+            def normalize(cat_list):
+                return [str(c).strip().lower() for c in cat_list if str(c).strip()]
+
+            new_cats = normalize(str(attrs.get("categories") or "").split(","))
+            instance = getattr(self, "instance", None)
+            old_cats = normalize(str(getattr(instance, "categories", "") or "").split(",")) if instance else []
+
+            adds_approved = APPROVED_TAG in new_cats and APPROVED_TAG not in old_cats
+            removes_approved = APPROVED_TAG in old_cats and APPROVED_TAG not in new_cats
+
+            if (adds_approved or removes_approved) and not is_admin:
+                raise serializers.ValidationError({
+                    "categories": "La etiqueta 'aprobada' solo puede modificarla un administrador."
+                })
+
+            if "grabar podcast" in new_cats and not is_admin:
+                categories_value = str(attrs.get("categories") or "")
+                if "procesando" not in new_cats:
+                    categories_value = f"{categories_value}, Procesando".strip(", ")
+                    attrs["categories"] = categories_value
+        return attrs
 
     def get_is_favorited(self, obj):
         request = self.context.get("request")

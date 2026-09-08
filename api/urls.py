@@ -39,6 +39,9 @@ urlpatterns = [
     path('tasks/<uuid:task_id>/repost/', views.repost_task, name='task-repost'), # ✅ ¡AQUÍ ESTÁ!
     path('tasks/<uuid:task_id>/users-who-liked/', views.users_who_liked_task, name='task-likers'),
     path('tasks/<uuid:task_id>/users-who-shared/', views.users_who_shared_task, name='task-sharers'),
+    path('tasks/<uuid:task_id>/tags/', views.sync_task_tags, name='task-tags'),
+    path('tasks/<uuid:task_id>/approve/', views.toggle_task_approval, name='task-approve'),
+    path('tasks/<uuid:task_id>/podcast-invitation/', views.respond_podcast_invitation, name='podcast-invitation-response'),
 
     # Comentarios de Tareas
     path('tasks/<uuid:task_id>/comments/', views.TaskCommentListCreateView.as_view(), name='task-comments'),
@@ -75,7 +78,14 @@ urlpatterns = [
 
     # Categorías
     path('categories/', views.create_categoryp, name='category-p-list-create'),
+    path('categories/<int:pk>/', views.create_categoryp, name='category-p-detail'),
+    path('categories/reorder/', views.reorder_categoryp, name='category-p-reorder'),
+    path('categories/user/<uuid:user_id>/', views.list_categoryp_for_user, name='category-p-list-for-user'),
     path('new-categories/', views.new_category_list_create, name='new-category-list-create'),
+
+    # Filtros guardados por perfil (CRUD propio, consulta aparte del feed)
+    path('saved-filters/', views.saved_filters_list_create, name='saved-filter-list-create'),
+    path('saved-filters/<uuid:pk>/', views.saved_filter_detail, name='saved-filter-detail'),
 
     # Admin
     path('verify-admin/', views.verify_admin, name='verify-admin'), # FIX: Movido para que coincida con el frontend

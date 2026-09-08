@@ -18,6 +18,7 @@ from .models import (
     SharedTask,
     SharedTaskComment,
     Task,
+    TaskTag,
     pFavorito,
 )
 from .notifications import create_notification, retire_notification
@@ -83,6 +84,44 @@ def _retire(instance, origin=None):
         ):
             return
     retire_notification(dedupe_key=f"{instance._meta.label_lower}:{instance.pk}")
+
+
+@receiver(post_save, sender=TaskTag)
+def notify_task_tag(sender, instance, created, **kwargs):
+    """Notifica a la persona etiquetada en una publicación.
+    Si la publicación es de categoría 'Grabar Podcast', la notificación
+    usa el tipo especial 'podcast_invite' para destacarla como felicitación."""
+    if not created:
+        return
+    task = instance.task
+    is_podcast = "grabar podcast" in (task.categories or "").lower()
+    if is_podcast:
+        _notify(
+            instance,
+            recipient=instance.user,
+            actor=instance.tagged_by,
+            notification_type="podcast_invite",
+            target_type="task",
+            target_id=instance.task_id,
+            text=f"🎉 ¡{_actor_name(instance.tagged_by)} te eligió para grabar un podcast!",
+            data={"task_title": _excerpt(task.title, 80)},
+        )
+        return
+    _notify(
+        instance,
+        recipient=instance.user,
+        actor=instance.tagged_by,
+        notification_type="task_tag",
+        target_type="task",
+        target_id=instance.task_id,
+        text=f"{_actor_name(instance.tagged_by)} te etiquetó en una publicación",
+        data={"task_title": _excerpt(task.title, 80)},
+    )
+
+
+@receiver(post_delete, sender=TaskTag)
+def retire_task_tag_notification(sender, instance, **kwargs):
+    _retire(instance)
 
 
 @receiver(post_save, sender=Like)

@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.db.models import Count, Exists, OuterRef, Q, Subquery
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
 from django.db.models import Case, When, Value, IntegerField, CharField
 from django.conf import settings
@@ -26,6 +26,7 @@ from .serializers import (
     SimpleUserSerializer,
     NewCategorySerializer,
     CategoryPSerializer,
+    UserSavedFilterSerializer,
     TaskSerializer,
     SharedTaskSerializer,
     SharedTaskDetailSerializer,
@@ -38,8 +39,9 @@ from .serializers import (
     PosttSerializer
 )
 from . import models as ms
-from .notifications import retire_notification
+from .notifications import retire_notification, create_notification
 from itertools import chain
+from massaging.models import Message
 from . import throttling as ts
 from django.db.models import F
 
@@ -57,7 +59,10 @@ def filter_by_categories(queryset, category_filter, field_name):
             seen.add(normalized)
 
     for category in categories:
-        pattern = rf"(?:^|,)\s*{re.escape(category)}\s*(?:,|$)"
+        if category.casefold() == "aprobada":
+            pattern = r"(?:^|,)\s*aprobada?s?\s*(?:,|$)"
+        else:
+            pattern = rf"(?:^|,)\s*{re.escape(category)}\s*(?:,|$)"
         queryset = queryset.filter(**{f"{field_name}__iregex": pattern})
     return queryset
 
@@ -213,6 +218,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
         user_id = self.request.query_params.get("user_id")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
+        status_filter = self.request.query_params.get("status")
         sort_by = self.request.query_params.get("sort_by")
         favorites_only = self.request.query_params.get("favorites_only")
         favorite_users_only = self.request.query_params.get("favorite_users_only")
@@ -235,6 +241,9 @@ class TaskListCreateView(generics.ListCreateAPIView):
             
         if category:
             qs = filter_by_categories(qs, category, "categories")
+
+        if status_filter:
+            qs = filter_by_categories(qs, status_filter, "categories")
             
         if favorites_only in ['true', '1', 'True', True]:
             if user_id:
@@ -396,7 +405,9 @@ class StoryListCreateView(generics.ListCreateAPIView):
         )
 
     def create(self, request, *args, **kwargs):
-        incoming_data = request.data.copy()
+        # ⚡ FIX: QueryDict.copy() hace deepcopy y truena al clonar el archivo subido
+        # (TypeError: cannot pickle 'BufferedRandom'). Usamos .dict() como en TaskListCreateView.
+        incoming_data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
         caption_value = (incoming_data.get("caption") or "").strip()
         if hasattr(incoming_data, "pop"):
             incoming_data.pop("caption", None)
@@ -945,6 +956,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         qs = super().get_queryset()
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
+        status_filter = self.request.query_params.get("status")
         sort_by = self.request.query_params.get("sort_by")
         favorites_only = self.request.query_params.get("favorites_only")
         favorite_users_only = self.request.query_params.get("favorite_users_only")
@@ -960,6 +972,8 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             
         if category:
             qs = filter_by_categories(qs, category, "task__categories")
+        if status_filter:
+            qs = filter_by_categories(qs, status_filter, "task__categories")
             
         if favorites_only in ['true', '1', 'True', True]:
             qs = qs.filter(task__favorited_by__user=self.request.user)
@@ -1122,11 +1136,91 @@ def create_categoryp(request, pk=None):
         cat.delete()
         return Response(status=204)
 
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def reorder_categoryp(request):
+    """Persiste el nuevo orden del filtro personal del usuario (arrastrar y soltar,
+    igual que hacen los admins con las categorías globales del filtro)."""
+    order = request.data.get("order")
+    if not isinstance(order, list) or not order:
+        return Response({"order": "Debes enviar una lista de ids en el nuevo orden."}, status=400)
+
+    owned_ids = set(str(pk) for pk in ms.CategoryP.objects.filter(user=request.user).values_list("id", flat=True))
+    for position, cat_id in enumerate(order):
+        if str(cat_id) not in owned_ids:
+            continue
+        ms.CategoryP.objects.filter(pk=cat_id, user=request.user).update(position=position)
+
+    cats = ms.CategoryP.objects.filter(user=request.user)
+    return Response(CategoryPSerializer(cats, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def list_categoryp_for_user(request, user_id):
+    """Lectura pública del filtro personal de OTRO usuario, para mostrarlo
+    junto al propio cuando se está viendo su perfil (como en la versión anterior)."""
+    cats = ms.CategoryP.objects.filter(user_id=user_id)
+    return Response(CategoryPSerializer(cats, many=True).data)
+
+
+# ============================================================================
+# FILTROS GUARDADOS POR PERFIL (CRUD propio, un solo campo JSON)
+# ============================================================================
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def saved_filters_list_create(request):
+    """Lista o crea los filtros guardados del perfil autenticado.
+    No toca el feed de tareas: se consulta aparte, sin renderizar tareas."""
+    if request.method == "GET":
+        filters_qs = ms.UserSavedFilter.objects.filter(user=request.user)
+        return Response(UserSavedFilterSerializer(filters_qs, many=True).data)
+
+    serializer = UserSavedFilterSerializer(data=request.data, context={"request": request})
+    if serializer.is_valid():
+        try:
+            serializer.save()
+        except IntegrityError:
+            return Response(
+                {"name": "Ya tienes un filtro guardado con ese nombre."}, status=400
+            )
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+@api_view(["PUT", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def saved_filter_detail(request, pk):
+    saved_filter = get_object_or_404(ms.UserSavedFilter, pk=pk, user=request.user)
+
+    if request.method == "DELETE":
+        saved_filter.delete()
+        return Response(status=204)
+
+    partial = request.method == "PATCH"
+    serializer = UserSavedFilterSerializer(
+        saved_filter, data=request.data, partial=partial, context={"request": request}
+    )
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticatedOrReadOnly])
 def new_category_list_create(request):
     if request.method == "GET":
-        serializer = NewCategorySerializer(ms.NewCategory.objects.all(), many=True)
+        pch = (request.query_params.get("pch") or "").strip()
+        qs = ms.NewCategory.objects.all()
+        if pch:
+            # Globales (pch vacío) + las del tema solicitado
+            qs = qs.filter(Q(pch="") | Q(pch__iexact=pch))
+        include_approval = request.query_params.get("include_approval") in ["true", "1", "True"]
+        if not include_approval and not request.user.is_staff and not request.user.is_superuser:
+            qs = qs.exclude(name__iexact=ms.APPROVED_TAG)
+        serializer = NewCategorySerializer(qs, many=True)
         return Response(serializer.data)
     if not request.user.is_staff: return Response(status=403)
     serializer = NewCategorySerializer(data=request.data)
@@ -1383,6 +1477,189 @@ def admin_app_like_profile(request, profile_id):
         "liked": True,
         "likes_count": profile_user.likes_received.count()
     })
+
+# ============================================================================
+# ETIQUETADO DE PERSONAS EN PUBLICACIONES
+# ============================================================================
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def sync_task_tags(request, task_id):
+    """Sincroniza las personas etiquetadas en una tarea. Solo el autor (o staff)."""
+    task = get_object_or_404(ms.Task, id=task_id)
+    if task.user_id != request.user.id and not request.user.is_staff:
+        return Response({"detail": "Solo el autor puede editar las etiquetas."}, status=403)
+
+    user_ids = request.data.get("user_ids", [])
+    if not isinstance(user_ids, list):
+        return Response({"detail": "user_ids debe ser una lista."}, status=400)
+
+    # El autor no tiene sentido etiquetándose a sí mismo
+    desired_ids = {str(uid) for uid in user_ids if str(uid) != str(request.user.id)}
+    users_map = {str(u.id): u for u in User.objects.filter(id__in=desired_ids)}
+
+    existing_tags = {str(tag.user_id): tag for tag in task.tagged_users.all()}
+
+    # Altas (la señal post_save dispara la notificación al etiquetado)
+    for uid in desired_ids - set(existing_tags):
+        user = users_map.get(uid)
+        if user:
+            ms.TaskTag.objects.get_or_create(
+                task=task, user=user, defaults={"tagged_by": request.user}
+            )
+
+    # Bajas
+    removed = set(existing_tags) - desired_ids
+    if removed:
+        task.tagged_users.filter(user_id__in=removed).delete()
+
+    tagged = [
+        {
+            "id": str(tag.user.id),
+            "username": getattr(tag.user, "username", None),
+            "first_name": getattr(tag.user, "first_name", "") or "",
+            "last_name": getattr(tag.user, "last_name", "") or "",
+        }
+        for tag in task.tagged_users.select_related("user").all()
+    ]
+    return Response({"task_id": str(task.id), "tagged_users": tagged})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_task_approval(request, task_id):
+    """Solo staff: aprueba una propuesta de podcast y notifica a sus involucrados."""
+    if not (request.user.is_staff or request.user.is_superuser):
+        return Response({"detail": "Solo administradores."}, status=403)
+
+    task = get_object_or_404(ms.Task, id=task_id)
+    approve = bool(request.data.get("approve", True))
+
+    cats = [c.strip() for c in (task.categories or "").split(",") if c.strip()]
+    is_podcast = any(ms.PODCAST_CATEGORY.casefold() == category.casefold() for category in cats)
+    if not is_podcast:
+        return Response(
+            {"detail": "Solo se pueden aprobar tareas con la categoría Grabar Podcast."},
+            status=400,
+        )
+    has_tag = ms.APPROVED_TAG in [c.lower() for c in cats]
+
+    if approve and not has_tag:
+        cats = [c for c in cats if c.casefold() != "procesando"]
+        cats.append(ms.APPROVED_TAG)
+    elif not approve and has_tag:
+        cats = [c for c in cats if c.lower() != ms.APPROVED_TAG]
+
+    task.categories = ", ".join(cats)
+    task.save(update_fields=["categories"])
+
+    is_podcast = ms.PODCAST_CATEGORY.lower() in (task.categories or "").lower()
+    kind = "podcast" if is_podcast else "tarea"
+
+    if approve:
+        actor_name = request.user.username or request.user.email
+        recipients = [task.user] + [
+            tag.user for tag in task.tagged_users.select_related("user").all()
+        ]
+        seen = set()
+        for recipient in recipients:
+            if not recipient or recipient.id == request.user.id or recipient.id in seen:
+                continue
+            seen.add(recipient.id)
+            if is_podcast:
+                text = "🎉 ¡Felicidades! El podcast donde fuiste etiquetado fue aprobado. ¡A grabar se ha dicho! 🎙️"
+                ntype = "podcast_approved"
+            else:
+                text = f"✅ Tu aportación fue aprobada por {actor_name}"
+                ntype = "task_approved"
+            create_notification(
+                recipient=recipient,
+                actor=request.user,
+                notification_type=ntype,
+                target_type="task",
+                target_id=task.id,
+                data={"text": text, "task_title": task.title[:80]},
+                dedupe_key=f"approved:{kind}:{task.id}",
+            )
+        for tag in task.tagged_users.select_related("user").all():
+            invitation, _ = ms.PodcastInvitation.objects.get_or_create(
+                task=task,
+                user=tag.user,
+                defaults={"status": ms.PodcastInvitation.STATUS_PENDING},
+            )
+            if invitation.status == ms.PodcastInvitation.STATUS_PENDING:
+                Message.objects.filter(
+                    sender=request.user,
+                    receiver=tag.user,
+                    content__startswith=f"🎙️ Invitación a podcast aprobada | tarea:{task.id}",
+                ).first() or Message.objects.create(
+                    sender=request.user,
+                    receiver=tag.user,
+                    content=(
+                        f"↪ Publicación compartida: {task.title} [task:{task.id}]\n"
+                        "🎙️ Invitación a podcast aprobada.\n"
+                        "Fuiste invitado a participar. Abre la tarea para aceptar o rechazar la invitación."
+                    ),
+                )
+    else:
+        # Al quitar la aprobación, retiramos la felicitación
+        retire_notification(dedupe_key=f"approved:{kind}:{task.id}")
+
+    return Response({
+        "task_id": str(task.id),
+        "approved": approve,
+        "categories": task.categories,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def respond_podcast_invitation(request, task_id):
+    task = get_object_or_404(ms.Task, id=task_id)
+    invitation = get_object_or_404(
+        ms.PodcastInvitation,
+        task=task,
+        user=request.user,
+    )
+    if invitation.status != ms.PodcastInvitation.STATUS_PENDING:
+        return Response({"status": invitation.status, "detail": "La invitación ya fue respondida."}, status=400)
+
+    accepted = bool(request.data.get("accepted", True))
+    invitation.status = (
+        ms.PodcastInvitation.STATUS_ACCEPTED
+        if accepted else ms.PodcastInvitation.STATUS_DECLINED
+    )
+    invitation.responded_at = timezone.now()
+    invitation.save(update_fields=["status", "responded_at", "updated_at"])
+
+    actor_name = request.user.username or request.user.email
+    status_text = "aceptó" if accepted else "rechazó"
+    admins = User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)).exclude(id=request.user.id)
+    for admin in admins:
+        create_notification(
+            recipient=admin,
+            actor=request.user,
+            notification_type="podcast_invitation_response",
+            target_type="task",
+            target_id=task.id,
+            data={"text": f"{actor_name} {status_text} la invitación al podcast.", "task_title": task.title[:80]},
+            dedupe_key=f"podcast-response:{task.id}:{request.user.id}",
+        )
+
+    admin_recipient = User.objects.filter(email__iexact="owen@hotmail.com").first()
+    if admin_recipient and admin_recipient.id != request.user.id:
+        Message.objects.create(
+            sender=request.user,
+            receiver=admin_recipient,
+            content=(
+                f"↪ Publicación compartida: {task.title} [task:{task.id}]\n"
+                f"🎙️ Invitación al podcast {status_text}.\n"
+                f"El usuario {actor_name} respondió {status_text} la invitación."
+            ),
+        )
+
+    return Response({"task_id": str(task.id), "status": invitation.status})
+
 
 # ============================================================================
 # FORO (Posts)
