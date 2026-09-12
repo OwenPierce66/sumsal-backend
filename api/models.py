@@ -14,6 +14,23 @@ APPROVED_TAG = "aprobada"
 # Categoría que convierte una publicación en propuesta de podcast.
 PODCAST_CATEGORY = "Grabar Podcast"
 
+# Etiquetas de estado: viven en `categories` pero no son categorías de filtro.
+STATUS_TAGS = {"aprobada", "aprobadas", "procesando"}
+
+# Espejo del árbol de subtemas del cliente: lo que aparezca aquí NO es categoría principal.
+DEFAULT_SUBTHEMES = {
+    "programacion": ["React", "Python", "Node.js", "Django", "React Native", "JavaScript", "Frontend", "Backend"],
+    "tecnologia": ["Inteligencia Artificial", "Ciberseguridad", "Hardware", "Software", "Innovación"],
+    "educacion": ["Matemáticas", "Idiomas", "Ciencias", "Historia", "Pedagogía"],
+    "salud": ["Nutrición", "Ejercicio", "Bienestar Mental", "Medicina", "Psicología"],
+    "finanzas": ["Inversiones", "Ahorro", "Criptomonedas", "Emprendimiento", "Economía"],
+    "arte": ["Pintura", "Música", "Fotografía", "Cine", "Diseño"],
+    "deportes": ["Fútbol", "Baloncesto", "Tenis", "Natación", "Fitness"],
+}
+SUBTHEME_NAMES = {
+    name.casefold() for names in DEFAULT_SUBTHEMES.values() for name in names
+}
+
 # ============================================================================
 # CLASES BASE Y GESTIÓN DE USUARIOS
 # ============================================================================
@@ -82,6 +99,9 @@ class Profile(TimeStampedModel):
     subscriptionActive = models.BooleanField(_("subscription active"), default=False)
     subscription_amount = models.DecimalField(
         _("subscription amount"), max_digits=10, decimal_places=2, default=0
+    )
+    personal_filter_public = models.BooleanField(
+        _("show personal filter everywhere"), default=False
     )
     role = models.IntegerField(_("role"), default=1, help_text=_("1=user, 2=editor, 3=admin"))
 
@@ -175,6 +195,9 @@ class NewCategory(models.Model):
         _("pch"), max_length=20, blank=True, default="",
         help_text=_("Tipo de aportación dueño de esta categoría (consejos/peticiones/historias)"),
     )
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.CASCADE, related_name="children"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -186,15 +209,18 @@ class NewCategory(models.Model):
 
 
 class CategoryP(models.Model):
-    """Filtro personal del usuario: categorías propias derivadas de sus tareas,
-    guardadas aparte (CRUD) para consultarlas sin renderizar todas las tareas."""
+    """Filtro personal del usuario: árbol de categorías propias (padre/hijo sin
+    límite de profundidad), guardado aparte para consultarlo sin recorrer tareas."""
     name = models.CharField(_("name"), max_length=100)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="categoriesp")
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.CASCADE, related_name="children"
+    )
     position = models.PositiveIntegerField(_("position"), default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ("user", "name")
+        unique_together = ("user", "name", "parent")
         ordering = ["position", "created_at"]
 
     def __str__(self):

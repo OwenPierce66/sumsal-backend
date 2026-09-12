@@ -118,7 +118,7 @@ class UserSerializer(serializers.ModelSerializer):
 class NewCategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.NewCategory
-        fields = ["id", "name", "pch", "created_at"]
+        fields = ["id", "name", "pch", "parent", "created_at"]
         read_only_fields = ["id", "created_at"]
 
     def validate(self, attrs):
@@ -150,7 +150,7 @@ class NewCategorySerializer(serializers.ModelSerializer):
 class CategoryPSerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.CategoryP
-        fields = ["id", "name", "user", "position", "created_at"]
+        fields = ["id", "name", "user", "parent", "position", "created_at"]
         read_only_fields = ["id", "user", "created_at"]
 
     def validate_name(self, value):
@@ -163,13 +163,29 @@ class CategoryPSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_parent(self, value):
+        if value is None:
+            return value
+        request = self.context.get("request")
+        if request and value.user_id != request.user.id:
+            raise serializers.ValidationError("Esa categoría padre no es tuya.")
+        return value
+
     def create(self, validated_data):
         user = self.context["request"].user
         validated_data["user"] = user
         if "position" not in validated_data:
-            last = ms.CategoryP.objects.filter(user=user).order_by("-position").first()
+            last = ms.CategoryP.objects.filter(
+                user=user, parent=validated_data.get("parent")
+            ).order_by("-position").first()
             validated_data["position"] = (last.position + 1) if last else 0
         return super().create(validated_data)
+
+
+class PersonalFilterVisibilitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ms.Profile
+        fields = ["personal_filter_public"]
 
 
 class UserSavedFilterSerializer(serializers.ModelSerializer):

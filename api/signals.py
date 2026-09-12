@@ -12,6 +12,8 @@ from .models import (
     LikePostt,
     LikeSharedTask,
     LikeSharedTaskComment,
+    NewCategory,
+    CategoryP,
     NewPeticionCommentPost,
     Postt,
     Profile,
@@ -20,6 +22,9 @@ from .models import (
     Task,
     TaskTag,
     pFavorito,
+    APPROVED_TAG,
+    STATUS_TAGS,
+    SUBTHEME_NAMES,
 )
 from .notifications import create_notification, retire_notification
 
@@ -31,6 +36,42 @@ def create_user_profile(sender, instance, created, **kwargs):
     if created:
         if not hasattr(instance, "profile"):
             Profile.objects.create(user=instance)
+
+
+@receiver(post_save, sender=Task)
+def auto_fill_personal_category_filter(sender, instance, **kwargs):
+    """Réplica automática del filtro: al crear/editar una tarea, sus categorías
+    PRINCIPALES se guardan en el filtro personal (CategoryP) del autor.
+    Se excluyen subtemas conocidos y etiquetas de estado (procesando/aprobada).
+    Nunca quita nada: si el usuario borra una entrada manualmente, se respeta."""
+    if not instance.user_id or not instance.categories:
+        return
+
+    principal_names = []
+    seen = set()
+    for raw in instance.categories.split(","):
+        name = raw.strip()
+        key = name.casefold()
+        if not name or key in seen:
+            continue
+        if key in SUBTHEME_NAMES or key in STATUS_TAGS:
+            continue
+        seen.add(key)
+        principal_names.append(name)
+
+    if not principal_names:
+        return
+
+    existing = list(CategoryP.objects.filter(user_id=instance.user_id))
+    existing_casefold = {c.name.casefold() for c in existing}
+    next_position = (max((c.position for c in existing), default=-1)) + 1
+
+    for name in principal_names:
+        if name.casefold() in existing_casefold:
+            continue
+        CategoryP.objects.create(user_id=instance.user_id, name=name, position=next_position)
+        next_position += 1
+        existing_casefold.add(name.casefold())
 
 
 def _excerpt(value, limit=140):

@@ -26,6 +26,7 @@ from .serializers import (
     SimpleUserSerializer,
     NewCategorySerializer,
     CategoryPSerializer,
+    PersonalFilterVisibilitySerializer,
     UserSavedFilterSerializer,
     TaskSerializer,
     SharedTaskSerializer,
@@ -1137,6 +1138,19 @@ def create_categoryp(request, pk=None):
         return Response(status=204)
 
 
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def personal_filter_visibility(request):
+    profile, _ = ms.Profile.objects.get_or_create(user=request.user)
+    if request.method == "PATCH":
+        serializer = PersonalFilterVisibilitySerializer(
+            profile, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+    return Response(PersonalFilterVisibilitySerializer(profile).data)
+
+
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def reorder_categoryp(request):
@@ -1159,10 +1173,34 @@ def reorder_categoryp(request):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def list_categoryp_for_user(request, user_id):
-    """Lectura pública del filtro personal de OTRO usuario, para mostrarlo
-    junto al propio cuando se está viendo su perfil (como en la versión anterior)."""
+    """Filtro personal de un perfil: siempre visible en su propio perfil."""
     cats = ms.CategoryP.objects.filter(user_id=user_id)
     return Response(CategoryPSerializer(cats, many=True).data)
+
+
+def _ensure_personal_categories(user_id):
+    """Backfill: guarda en CategoryP las categorías principales de tareas ya existentes."""
+    used = {}
+    for categories in ms.Task.objects.filter(user_id=user_id).values_list("categories", flat=True):
+        for raw in (categories or "").split(","):
+            name = raw.strip()
+            key = name.casefold()
+            if not name or key in ms.SUBTHEME_NAMES or key in ms.STATUS_TAGS:
+                continue
+            used.setdefault(key, name)
+
+    if not used:
+        return
+
+    existing = list(ms.CategoryP.objects.filter(user_id=user_id))
+    existing_names = {item.name.casefold() for item in existing}
+    next_position = max((item.position for item in existing), default=-1) + 1
+
+    for key, name in used.items():
+        if key in existing_names:
+            continue
+        ms.CategoryP.objects.create(user_id=user_id, name=name, position=next_position)
+        next_position += 1
 
 
 # ============================================================================
@@ -1217,6 +1255,25 @@ def new_category_list_create(request):
         if pch:
             # Globales (pch vacío) + las del tema solicitado
             qs = qs.filter(Q(pch="") | Q(pch__iexact=pch))
+        profile_user_id = request.query_params.get("profile_user_id")
+        if profile_user_id:
+            # El cruce usa el filtro ya guardado del perfil, no todas sus tareas.
+            saved = {
+                name.casefold()
+                for name in ms.CategoryP.objects.filter(user_id=profile_user_id).values_list("name", flat=True)
+            }
+            matched = [category for category in qs if category.name.casefold() in saved]
+            # Arrastramos también los subtemas de cada categoría coincidente.
+            result = list(matched)
+            seen_ids = {category.id for category in result}
+            pending = list(matched)
+            while pending:
+                children = ms.NewCategory.objects.filter(parent__in=pending)
+                pending = [child for child in children if child.id not in seen_ids]
+                for child in pending:
+                    seen_ids.add(child.id)
+                    result.append(child)
+            qs = result
         include_approval = request.query_params.get("include_approval") in ["true", "1", "True"]
         if not include_approval and not request.user.is_staff and not request.user.is_superuser:
             qs = qs.exclude(name__iexact=ms.APPROVED_TAG)
