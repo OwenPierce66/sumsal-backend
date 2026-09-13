@@ -19,6 +19,7 @@ from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 import re
 import json
+import unicodedata
 
 from .serializers import ProfileSerializer, file_to_abs_url
 from .serializers import (
@@ -50,10 +51,16 @@ User = get_user_model()
 
 
 def filter_by_categories(queryset, category_filter, field_name):
+    """Match every requested category token, including user-entered terms.
+
+    Categories are still stored as a comma-separated legacy field, so matching
+    must stay token-aware and must not turn a search for "art" into a match for
+    "artificial". The same helper is used by original and shared tasks.
+    """
     categories = []
     seen = set()
     for raw_category in (category_filter or "").split(","):
-        category = raw_category.strip()
+        category = " ".join(raw_category.split())
         normalized = category.casefold()
         if category and normalized not in seen:
             categories.append(category)
@@ -65,6 +72,77 @@ def filter_by_categories(queryset, category_filter, field_name):
         else:
             pattern = rf"(?:^|,)\s*{re.escape(category)}\s*(?:,|$)"
         queryset = queryset.filter(**{f"{field_name}__iregex": pattern})
+    return queryset
+
+
+def normalize_filter_text(value):
+    value = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(char for char in value if not unicodedata.combining(char)).casefold().strip()
+
+
+def apply_task_filters(queryset, params, owner_id=None, request_user=None, category_field="categories"):
+    """Apply the shared task-filter contract to any task queryset."""
+    from django.utils import timezone
+    from datetime import timedelta
+    from django.db.models import Count
+
+    pch = params.get("pch")
+    category = params.get("category")
+    status_filter = params.get("status")
+    date_filter = params.get("date_filter")
+    sort_by = params.get("sort_by")
+    raw_search = " ".join(str(params.get("search") or "").split())
+    search = normalize_filter_text(raw_search)
+    favorites_only = params.get("favorites_only")
+    favorite_users_only = params.get("favorite_users_only")
+    verified_users_only = params.get("verified_users_only")
+    recommended_users_only = params.get("recommended_users_only")
+
+    if owner_id:
+        queryset = queryset.filter(user_id=owner_id)
+    if pch:
+        queryset = queryset.filter(pch__iexact=pch)
+    if date_filter == "hoy":
+        queryset = queryset.filter(created_at__gte=timezone.now() - timedelta(days=1))
+    elif date_filter == "esta_semana":
+        queryset = queryset.filter(created_at__gte=timezone.now() - timedelta(days=7))
+    elif date_filter == "este_mes":
+        queryset = queryset.filter(created_at__gte=timezone.now() - timedelta(days=30))
+    if category:
+        queryset = filter_by_categories(queryset, category, category_field)
+    if status_filter:
+        queryset = filter_by_categories(queryset, status_filter, category_field)
+    if search:
+        # Free text is deliberately transient: it searches existing content
+        # without creating catalog categories.
+        search_query = (
+            Q(title__icontains=raw_search)
+            | Q(description__icontains=raw_search)
+            | Q(**{f"{category_field}__icontains": raw_search})
+        )
+        if search != raw_search.casefold():
+            search_query |= (
+                Q(title__icontains=search)
+                | Q(description__icontains=search)
+                | Q(**{f"{category_field}__icontains": search})
+            )
+        queryset = queryset.filter(search_query)
+    if favorites_only in ["true", "1", "True", True]:
+        if owner_id:
+            queryset = queryset.filter(favorited_by__user_id=owner_id)
+        elif request_user and request_user.is_authenticated:
+            queryset = queryset.filter(favorited_by__user=request_user)
+    if favorite_users_only in ["true", "1", "True", True] and request_user and request_user.is_authenticated:
+        queryset = queryset.filter(user__profile_favorites_received__user=request_user).distinct()
+    if verified_users_only in ["true", "1", "True", True]:
+        queryset = queryset.filter(user__profile__is_verified=True)
+    if recommended_users_only in ["true", "1", "True", True]:
+        queryset = queryset.filter(user__profile__is_recommended=True)
+
+    if sort_by == "likes":
+        queryset = queryset.annotate(like_count=Count("likes")).order_by("-like_count", "-created_at")
+    else:
+        queryset = queryset.order_by("-created_at")
     return queryset
 
 
@@ -180,11 +258,15 @@ class UserMyTasksView(generics.ListAPIView):
     pagination_class = StandardPagination
 
     def get_queryset(self):
-        return ms.Task.objects.filter(user=self.request.user).select_related(
-            "user"
-        ).prefetch_related(
+        queryset = ms.Task.objects.select_related("user").prefetch_related(
             "shared_instances__shared_by"
-        ).order_by('-created_at')
+        )
+        return apply_task_filters(
+            queryset,
+            self.request.query_params,
+            owner_id=self.request.user.id,
+            request_user=self.request.user,
+        )
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -215,16 +297,30 @@ class TaskListCreateView(generics.ListCreateAPIView):
         from django.db.models import Count
         
         qs = super().get_queryset()
+        # Keep the public task endpoint on the same filter contract used by
+        # the authenticated profile endpoint.
+        return apply_task_filters(
+            qs.select_related("user"),
+            self.request.query_params,
+            owner_id=self.request.query_params.get("user_id"),
+            request_user=self.request.user,
+        ).prefetch_related(
+            "likes", "post_comments", "subtasks", "subfuentes",
+            "subfactores", "shared_instances__shared_by"
+        )
+
+        # Legacy filtering code below is intentionally unreachable while
+        # retained temporarily for easier comparison during migration.
         pch = self.request.query_params.get("pch")
         user_id = self.request.query_params.get("user_id")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
         status_filter = self.request.query_params.get("status")
         sort_by = self.request.query_params.get("sort_by")
+        raw_search = " ".join(str(self.request.query_params.get("search") or "").split())
+        search = normalize_filter_text(raw_search)
         favorites_only = self.request.query_params.get("favorites_only")
         favorite_users_only = self.request.query_params.get("favorite_users_only")
-        verified_users_only = self.request.query_params.get("verified_users_only")
-        recommended_users_only = self.request.query_params.get("recommended_users_only")
         verified_users_only = self.request.query_params.get("verified_users_only")
         recommended_users_only = self.request.query_params.get("recommended_users_only")
         
@@ -959,6 +1055,8 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         category = self.request.query_params.get("category")
         status_filter = self.request.query_params.get("status")
         sort_by = self.request.query_params.get("sort_by")
+        raw_search = " ".join(str(self.request.query_params.get("search") or "").split())
+        search = normalize_filter_text(raw_search)
         favorites_only = self.request.query_params.get("favorites_only")
         favorite_users_only = self.request.query_params.get("favorite_users_only")
         verified_users_only = self.request.query_params.get("verified_users_only")
@@ -975,6 +1073,15 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             qs = filter_by_categories(qs, category, "task__categories")
         if status_filter:
             qs = filter_by_categories(qs, status_filter, "task__categories")
+        if search:
+            qs = qs.filter(
+                Q(task__title__icontains=raw_search)
+                | Q(task__description__icontains=raw_search)
+                | Q(task__categories__icontains=raw_search)
+                | Q(task__title__icontains=search)
+                | Q(task__description__icontains=search)
+                | Q(task__categories__icontains=search)
+            )
             
         if favorites_only in ['true', '1', 'True', True]:
             qs = qs.filter(task__favorited_by__user=self.request.user)

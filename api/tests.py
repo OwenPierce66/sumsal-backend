@@ -192,6 +192,15 @@ class SharedTaskViewRegressionTests(TestCase):
         response = client.get(reverse("shared-task-list-create"))
         self.assertIn(response.status_code, {200, 404})
 
+    def test_shared_task_list_endpoint_accepts_category_and_page_filters(self):
+        client = APIClient()
+        response = client.get(
+            reverse("shared-task-list-create"),
+            {"page": 2, "category": "alimentacion"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+
     def test_task_serializer_shared_by_list_includes_share_description(self):
         owner = User.objects.create_user(
             email="owner@example.com",
