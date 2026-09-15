@@ -130,9 +130,11 @@ class NewCategorySerializer(serializers.ModelSerializer):
             request and request.user.is_authenticated
             and (request.user.is_staff or request.user.is_superuser)
         )
-        if name.casefold() == ms.APPROVED_TAG.casefold() and not is_admin:
+        normalized_name = " ".join(name.split()).casefold()
+        approval_aliases = {"aprobada", "aprobadas", "aprovada", "aprovadas"}
+        if normalized_name in approval_aliases:
             raise serializers.ValidationError({
-                "name": "La categoría 'aprobada' solo puede crearla un administrador."
+                "name": "Aprobada es un estado del sistema y no puede crearse como categoría."
             })
         if name:
             qs = ms.NewCategory.objects.filter(name__iexact=name, pch__iexact=pch)
@@ -444,11 +446,12 @@ class TaskSerializer(serializers.ModelSerializer):
                     "categories": "La etiqueta 'aprobada' solo puede modificarla un administrador."
                 })
 
-            if "grabar podcast" in new_cats and not is_admin:
+            is_podcast = "grabar podcast" in new_cats
+            has_approved = APPROVED_TAG in new_cats
+            if is_podcast and not has_approved and "procesando" not in new_cats:
                 categories_value = str(attrs.get("categories") or "")
-                if "procesando" not in new_cats:
-                    categories_value = f"{categories_value}, Procesando".strip(", ")
-                    attrs["categories"] = categories_value
+                categories_value = f"{categories_value}, Procesando".strip(", ")
+                attrs["categories"] = categories_value
         return attrs
 
     def get_is_favorited(self, obj):

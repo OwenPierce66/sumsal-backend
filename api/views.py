@@ -67,8 +67,8 @@ def filter_by_categories(queryset, category_filter, field_name):
             seen.add(normalized)
 
     for category in categories:
-        if category.casefold() == "aprobada":
-            pattern = r"(?:^|,)\s*aprobada?s?\s*(?:,|$)"
+        if category.casefold() in {"aprobada", "aprobadas", "aprovada", "aprovadas"}:
+            pattern = r"(?:^|,)\s*(?:aprobada?s?|aprovada?s?)\s*(?:,|$)"
         else:
             pattern = rf"(?:^|,)\s*{re.escape(category)}\s*(?:,|$)"
         queryset = queryset.filter(**{f"{field_name}__iregex": pattern})
@@ -1386,8 +1386,8 @@ def new_category_list_create(request):
             qs = qs.exclude(name__iexact=ms.APPROVED_TAG)
         serializer = NewCategorySerializer(qs, many=True)
         return Response(serializer.data)
-    if not request.user.is_staff: return Response(status=403)
-    serializer = NewCategorySerializer(data=request.data)
+    if not (request.user.is_staff or request.user.is_superuser): return Response(status=403)
+    serializer = NewCategorySerializer(data=request.data, context={"request": request})
     if serializer.is_valid():
         serializer.save()
         return Response(serializer.data, status=201)
@@ -1396,11 +1396,16 @@ def new_category_list_create(request):
 @api_view(["GET", "PUT", "DELETE"])
 @permission_classes([IsAuthenticated])
 def new_category_detail(request, pk):
-    cat = get_object_or_404(ms.NewCategory, pk=pk)
+    cat = ms.NewCategory.objects.filter(pk=pk).first()
+    if cat is None:
+        return Response(
+            {"detail": f"La categoría {pk} no existe en esta base de datos."},
+            status=404,
+        )
     if request.method == "GET": return Response(NewCategorySerializer(cat).data)
-    if not request.user.is_staff: return Response(status=403)
+    if not (request.user.is_staff or request.user.is_superuser): return Response(status=403)
     if request.method == "PUT":
-        serializer = NewCategorySerializer(cat, data=request.data)
+        serializer = NewCategorySerializer(cat, data=request.data, context={"request": request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -1713,6 +1718,8 @@ def toggle_task_approval(request, task_id):
         cats.append(ms.APPROVED_TAG)
     elif not approve and has_tag:
         cats = [c for c in cats if c.lower() != ms.APPROVED_TAG]
+        if not any(c.casefold() == "procesando" for c in cats):
+            cats.append("Procesando")
 
     task.categories = ", ".join(cats)
     task.save(update_fields=["categories"])

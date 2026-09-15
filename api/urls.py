@@ -83,6 +83,7 @@ urlpatterns = [
     path('categories/user/<uuid:user_id>/', views.list_categoryp_for_user, name='category-p-list-for-user'),
     path('categories/visibility/', views.personal_filter_visibility, name='category-p-visibility'),
     path('new-categories/', views.new_category_list_create, name='new-category-list-create'),
+    path('new-categories/<int:pk>/', views.new_category_detail, name='new-category-detail'),
 
     # Filtros guardados por perfil (CRUD propio, consulta aparte del feed)
     path('saved-filters/', views.saved_filters_list_create, name='saved-filter-list-create'),
