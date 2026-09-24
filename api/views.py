@@ -45,7 +45,7 @@ from .notifications import retire_notification, create_notification
 from itertools import chain
 from massaging.models import Message
 from . import throttling as ts
-from django.db.models import F
+from django.db.models import Case, F, IntegerField, Value, When
 
 User = get_user_model()
 
@@ -73,6 +73,29 @@ def filter_by_categories(queryset, category_filter, field_name):
             pattern = rf"(?:^|,)\s*{re.escape(category)}\s*(?:,|$)"
         queryset = queryset.filter(**{f"{field_name}__iregex": pattern})
     return queryset
+
+
+def prioritize_category_path(queryset, category_filter, field_name):
+    """Put tasks whose comma-separated category path matches first."""
+    path = ",".join(
+        " ".join(part.split())
+        for part in (category_filter or "").split(",")
+        if " ".join(part.split())
+    )
+    if not path:
+        return queryset
+
+    escaped_path = re.escape(path)
+    prefix_path = rf"^{escaped_path}(?:,|$)"
+    exact_path = rf"^{escaped_path}$"
+    return queryset.annotate(
+        category_path_rank=Case(
+            When(**{f"{field_name}__iregex": exact_path}, then=Value(0)),
+            When(**{f"{field_name}__iregex": prefix_path}, then=Value(1)),
+            default=Value(2),
+            output_field=IntegerField(),
+        )
+    )
 
 
 def normalize_filter_text(value):
@@ -110,6 +133,7 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
         queryset = queryset.filter(created_at__gte=timezone.now() - timedelta(days=30))
     if category:
         queryset = filter_by_categories(queryset, category, category_field)
+        queryset = prioritize_category_path(queryset, category, category_field)
     if status_filter:
         queryset = filter_by_categories(queryset, status_filter, category_field)
     if search:
@@ -141,8 +165,13 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
 
     if sort_by == "likes":
         queryset = queryset.annotate(like_count=Count("likes")).order_by("-like_count", "-created_at")
+        if category:
+            queryset = queryset.order_by("category_path_rank", "-like_count", "-created_at")
     else:
-        queryset = queryset.order_by("-created_at")
+        if category:
+            queryset = queryset.order_by("category_path_rank", "-created_at")
+        else:
+            queryset = queryset.order_by("-created_at")
     return queryset
 
 
