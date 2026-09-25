@@ -1201,6 +1201,184 @@ def agregar_favorito(request):
         return Response({"mensaje": "Removed"}, status=204)
     return Response({"mensaje": "Added"}, status=201)
 
+
+def _favorite_position(model, user):
+    return (
+        model.objects.filter(user=user)
+        .order_by("-position", "-created_at")
+        .values_list("position", flat=True)
+        .first()
+        or 0
+    ) + 1
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def favorite_collection(request, user_id=None):
+    owner = get_object_or_404(User, id=user_id) if user_id else request.user
+    is_owner = owner.pk == request.user.pk
+    profile = ms.Profile.objects.get_or_create(user=owner)[0]
+    if not is_owner and not (
+        profile.favorite_profiles_public or profile.favorite_tasks_public
+    ):
+        return Response({"profiles": [], "tasks": [], "visibility": {
+            "profiles": False, "tasks": False,
+        }})
+
+    if request.method == "PATCH":
+        if not is_owner:
+            raise PermissionDenied("Solo el propietario puede ordenar favoritos.")
+        kind = request.data.get("type")
+        order = request.data.get("order")
+        if kind not in {"profiles", "tasks"} or not isinstance(order, list):
+            raise ValidationError({"order": "Envía una lista válida y type profiles/tasks."})
+        model = ms.pFavorito if kind == "profiles" else ms.Favorito
+        favorites = {
+            str(item.id): item
+            for item in model.objects.filter(user=owner).select_related(
+                "perfil" if kind == "profiles" else "task__user"
+            )
+        }
+        ordered_ids = [str(item_id) for item_id in order if str(item_id) in favorites]
+        if len(ordered_ids) != len(favorites) or len(set(ordered_ids)) != len(ordered_ids):
+            raise ValidationError({"order": "La lista debe contener todos los favoritos una sola vez."})
+
+        newly_pinned = []
+        with transaction.atomic():
+            locked = {
+                str(item.id): item
+                for item in model.objects.select_for_update().filter(user=owner)
+            }
+            for position, item_id in enumerate(ordered_ids):
+                item = locked[item_id]
+                was_pinned = item.is_pinned
+                item.position = position
+                item.is_pinned = position < 5
+                item.save(update_fields=["position", "is_pinned"])
+                if item.is_pinned and not was_pinned:
+                    newly_pinned.append(item)
+
+        for item in newly_pinned:
+            target = item.perfil if kind == "profiles" else item.task
+            recipient = target if kind == "profiles" else target.user
+            create_notification(
+                recipient=recipient,
+                actor=request.user,
+                notification_type="favorite_pin",
+                target_type="profile" if kind == "profiles" else "task",
+                target_id=target.pk,
+                data={"text": f"{request.user.username or 'Alguien'} te colocó entre sus 5 favoritos."},
+            )
+        return Response({"updated": True})
+
+    profiles = ms.pFavorito.objects.filter(user=owner).select_related("perfil")
+    tasks = ms.Favorito.objects.filter(user=owner).select_related("task")
+    if not is_owner:
+        if not profile.favorite_profiles_public:
+            profiles = profiles.none()
+        if not profile.favorite_tasks_public:
+            tasks = tasks.none()
+    return Response({
+        "profiles": [
+            {
+                "id": str(item.id),
+                "profile": SimpleUserSerializer(item.perfil, context={"request": request}).data,
+                "position": item.position,
+                "is_pinned": item.is_pinned,
+            }
+            for item in profiles.order_by("-is_pinned", "position", "created_at")
+        ],
+        "tasks": [
+            {
+                "id": str(item.id),
+                "task": TaskSerializer(item.task, context={"request": request}).data,
+                "position": item.position,
+                "is_pinned": item.is_pinned,
+            }
+            for item in tasks.order_by("-is_pinned", "position", "created_at")
+        ],
+        "visibility": {
+            "profiles": profile.favorite_profiles_public if is_owner else bool(profile.favorite_profiles_public),
+            "tasks": profile.favorite_tasks_public if is_owner else bool(profile.favorite_tasks_public),
+        },
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def toggle_favorite_pin(request):
+    kind = request.data.get("type")
+    item_id = request.data.get("id")
+    target_id = request.data.get("target_id")
+    if kind == "profile":
+        favorite = get_object_or_404(
+            ms.pFavorito,
+            **({"id": item_id} if item_id else {"perfil_id": target_id}),
+            user=request.user,
+        )
+    elif kind == "task":
+        favorite = get_object_or_404(
+            ms.Favorito,
+            **({"id": item_id} if item_id else {"task_id": target_id}),
+            user=request.user,
+        )
+    else:
+        raise ValidationError({"type": "Debe ser profile o task."})
+
+    model = favorite.__class__
+    should_pin = bool(request.data.get("is_pinned", True))
+    with transaction.atomic():
+        ordered = list(model.objects.select_for_update().filter(user=request.user).order_by(
+            "-is_pinned", "position", "created_at", "pk"
+        ))
+        ordered = [item for item in ordered if item.pk != favorite.pk]
+        if should_pin:
+            pinned = [item for item in ordered if item.is_pinned][:4]
+            unpinned = [item for item in ordered if item not in pinned]
+            favorite.is_pinned = True
+            ordered = pinned + [favorite] + unpinned
+        else:
+            favorite.is_pinned = False
+            ordered.append(favorite)
+        for position, item in enumerate(ordered):
+            item.position = position
+            item.is_pinned = position < 5
+            item.save(update_fields=["is_pinned", "position"])
+    if should_pin:
+        target = favorite.perfil if kind == "profile" else favorite.task
+        recipient = target if kind == "profile" else target.user
+        create_notification(
+            recipient=recipient,
+            actor=request.user,
+            notification_type="favorite_pin",
+            target_type=kind,
+            target_id=target.pk,
+            data={"text": f"{request.user.username or 'Alguien'} te colocó entre sus 5 favoritos."},
+        )
+    favorite.refresh_from_db()
+    return Response({"id": str(favorite.id), "is_pinned": favorite.is_pinned, "position": favorite.position})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def search_directory(request):
+    query = " ".join(str(request.query_params.get("q", "")).split())
+    scope = request.query_params.get("scope", "both")
+    if not query:
+        return Response({"profiles": [], "tasks": []})
+    profiles = User.objects.filter(
+        Q(username__icontains=query)
+        | Q(first_name__icontains=query)
+        | Q(last_name__icontains=query)
+    ).exclude(pk=request.user.pk)[:20] if scope in {"profiles", "both"} else []
+    tasks = ms.Task.objects.filter(
+        Q(title__icontains=query) | Q(description__icontains=query)
+    ).select_related("user").order_by("-created_at")[:20] if scope in {"tasks", "both"} else []
+    return Response({
+        "profiles": SimpleUserSerializer(profiles, many=True, context={"request": request}).data,
+        "tasks": TaskSerializer(tasks, many=True, context={"request": request}).data,
+    })
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def listar_favoritos(request, user_id=None):

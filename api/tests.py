@@ -76,6 +76,99 @@ class UserMeViewRegressionTests(TestCase):
         self.assertIn("/media/", refreshed_response.data["user_image"])
 
 
+class FavoritePlacementTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            email="placement-owner@example.com",
+            password="test-password",
+            username="placement-owner",
+        )
+        self.viewer = User.objects.create_user(
+            email="placement-viewer@example.com",
+            password="test-password",
+            username="placement-viewer",
+        )
+        self.task = ms.Task.objects.create(
+            user=self.owner,
+            title="Tarea anclable",
+            description="Contenido de prueba",
+            pch="consejos",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.viewer)
+
+    def test_pin_favorite_and_directory_search(self):
+        add_response = self.client.post(
+            reverse("favorito-add"),
+            {"task_id": str(self.task.id)},
+            format="json",
+        )
+        self.assertEqual(add_response.status_code, 201)
+
+        pin_response = self.client.post(
+            reverse("favorite-pin"),
+            {"type": "task", "target_id": str(self.task.id)},
+            format="json",
+        )
+        self.assertEqual(pin_response.status_code, 200)
+        self.assertTrue(
+            ms.Favorito.objects.get(user=self.viewer, task=self.task).is_pinned
+        )
+        self.assertEqual(
+            ms.Notification.objects.filter(
+                recipient=self.owner,
+                notification_type="favorite_pin",
+            ).count(),
+            1,
+        )
+
+        search_response = self.client.get(
+            reverse("directory-search"),
+            {"q": "placement-owner", "scope": "profiles"},
+        )
+        self.assertEqual(search_response.status_code, 200)
+        self.assertEqual(search_response.data["profiles"][0]["username"], "placement-owner")
+
+    def test_reordering_into_top_five_notifies_once(self):
+        task_two = ms.Task.objects.create(
+            user=self.owner,
+            title="Segunda tarea",
+            description="Otra tarea",
+            pch="consejos",
+        )
+        for task in (self.task, task_two):
+            response = self.client.post(
+                reverse("favorito-add"),
+                {"task_id": str(task.id)},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 201)
+
+        favorites = list(
+            ms.Favorito.objects.filter(user=self.viewer).order_by("created_at")
+        )
+        response = self.client.patch(
+            reverse("favorite-collection"),
+            {
+                "type": "tasks",
+                "order": [str(favorites[1].id), str(favorites[0].id)],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            ms.Notification.objects.filter(
+                recipient=self.owner,
+                notification_type="favorite_pin",
+            ).count(),
+            2,
+        )
+        self.assertTrue(
+            ms.Favorito.objects.get(pk=favorites[1].pk).is_pinned
+        )
+
+
 class TaskUpdateRegressionTests(TestCase):
     def test_owner_can_patch_task_fields(self):
         user = User.objects.create_user(

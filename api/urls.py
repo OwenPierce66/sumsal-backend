@@ -75,6 +75,10 @@ urlpatterns = [
     path('pfavoritos/agregar/', views.agregar_pfavorito, name='pfavorito-add'),
     path('pfavoritos/listar/', views.listar_pfavoritos, name='pfavorito-list'),
     path('pfavoritos/listar/<uuid:user_id>/', views.listar_pfavoritos, name='pfavorito-list-user'),
+    path('favorites/collection/', views.favorite_collection, name='favorite-collection'),
+    path('favorites/collection/<uuid:user_id>/', views.favorite_collection, name='favorite-collection-user'),
+    path('favorites/pin/', views.toggle_favorite_pin, name='favorite-pin'),
+    path('search/directory/', views.search_directory, name='directory-search'),
 
     # Categorías
     path('categories/', views.create_categoryp, name='category-p-list-create'),

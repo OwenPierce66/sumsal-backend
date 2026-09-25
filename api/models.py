@@ -103,6 +103,12 @@ class Profile(TimeStampedModel):
     personal_filter_public = models.BooleanField(
         _("show personal filter everywhere"), default=False
     )
+    favorite_profiles_public = models.BooleanField(
+        _("show favorite profiles"), default=False
+    )
+    favorite_tasks_public = models.BooleanField(
+        _("show favorite tasks"), default=False
+    )
     role = models.IntegerField(_("role"), default=1, help_text=_("1=user, 2=editor, 3=admin"))
 
     class Meta:
@@ -317,6 +323,8 @@ class Favorito(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="user_favorites")
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="favorited_by")
     created_at = models.DateTimeField(auto_now_add=True)
+    position = models.PositiveIntegerField(default=0)
+    is_pinned = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("user", "task")
@@ -329,6 +337,8 @@ class pFavorito(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_favorites_given")
     perfil = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_favorites_received")
     created_at = models.DateTimeField(auto_now_add=True)
+    position = models.PositiveIntegerField(default=0)
+    is_pinned = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("user", "perfil")

@@ -50,6 +50,8 @@ class ProfileSerializer(serializers.ModelSerializer):
             "subscriptionActive",
             "subscription_amount",
             "role",
+            "favorite_profiles_public",
+            "favorite_tasks_public",
         ]
         read_only_fields = ["id"]
 
@@ -187,7 +189,11 @@ class CategoryPSerializer(serializers.ModelSerializer):
 class PersonalFilterVisibilitySerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.Profile
-        fields = ["personal_filter_public"]
+        fields = [
+            "personal_filter_public",
+            "favorite_profiles_public",
+            "favorite_tasks_public",
+        ]
 
 
 class UserSavedFilterSerializer(serializers.ModelSerializer):
