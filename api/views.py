@@ -221,6 +221,7 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     permission_classes = [AllowAny]
     serializer_class = UserSerializer
+    throttle_classes = [ts.RegisterThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -232,6 +233,38 @@ class RegisterView(generics.CreateAPIView):
             "refresh": str(refresh),
             "access": str(refresh.access_token),
         }, status=status.HTTP_201_CREATED)
+
+class LogoutView(APIView):
+    """
+    POST /api/auth/logout/
+    Body: { "refresh": "<refresh_token>" }
+
+    Blacklistea el refresh token en la BD para que no pueda usarse más.
+    Siempre responde 205 Reset Content para no bloquear el flujo del cliente,
+    incluso si el token ya expiró o es inválido.
+    """
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [ts.LogoutThrottle]
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh")
+
+        if not refresh_token:
+            return Response(
+                {"detail": "Se requiere el refresh token."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+        except Exception:
+            # Token ya expirado, inválido o ya blacklisteado — no importa,
+            # el objetivo (invalidar la sesión) ya se logró o nunca fue necesario.
+            pass
+
+        return Response(status=status.HTTP_205_RESET_CONTENT)
+
 
 class UserMeView(APIView):
     permission_classes = [IsAuthenticated]

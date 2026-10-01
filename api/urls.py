@@ -1,10 +1,21 @@
 from django.urls import path
 from . import views
 from . import notification_views
+from . import throttling as ts
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
+
+
+# ─── Vistas JWT con throttling propio ────────────────────────────────────────
+class ThrottledLoginView(TokenObtainPairView):
+    throttle_classes = [ts.LoginThrottle]
+
+
+class ThrottledRefreshView(TokenRefreshView):
+    throttle_classes = [ts.RefreshThrottle]
+
 
 urlpatterns = [
     # Notificaciones
@@ -16,9 +27,9 @@ urlpatterns = [
 
     # Autenticación y Usuarios
     path('auth/register/', views.RegisterView.as_view(), name='register'),
-    # ✅ FIX: Usar las vistas correctas de simplejwt y eliminar duplicados
-    path('auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
-    path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('auth/login/', ThrottledLoginView.as_view(), name='token_obtain_pair'),
+    path('auth/refresh/', ThrottledRefreshView.as_view(), name='token_refresh'),
+    path('auth/logout/', views.LogoutView.as_view(), name='logout'),
     path('users/me/', views.UserMeView.as_view(), name='user-me'),
     path('users/me/tasks/', views.UserMyTasksView.as_view(), name='user-my-tasks'),
     path('users/<uuid:user_id>/portadas/', views.obtener_portadas_usuario, name='user-portadas'),

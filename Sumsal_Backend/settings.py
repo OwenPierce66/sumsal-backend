@@ -126,14 +126,28 @@ REST_FRAMEWORK = {
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
+        # ── Globales ──────────────────────────────────────────────────────────
         "anon": "100/day",
         "user": "1000/day",
-        "auth": "60/day",
-        "user_me": "70/hour",
-        "burst": "60/minute",
+
+        # ── Auth por endpoint (independientes entre sí) ───────────────────────
+        # Login: 10 intentos/hora, 30/día — bloquea fuerza bruta por IP
+        "login":    "10/hour",
+        # Register: 5 cuentas/hora por IP — evita spam de cuentas
+        "register": "5/hour",
+        # Refresh: 60/hora — el silent-refresh ocurre aprox cada expiración
+        "refresh":  "60/hour",
+        # Logout: 20/hora — uso legítimo máximo
+        "logout":   "20/hour",
+
+        # ── Endpoints autenticados ─────────────────────────────────────────────
+        "user_me":   "70/hour",
+        "burst":     "60/minute",
         "sustained": "1000/day",
-        "vault": "170/day",
-        "uploads": "350/day",
+        "vault":     "170/day",
+        "uploads":   "350/day",
+
+        # ── Lectura pública ───────────────────────────────────────────────────
         "public": "700/hour",
     },
 }
