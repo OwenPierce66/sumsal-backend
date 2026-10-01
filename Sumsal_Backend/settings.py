@@ -305,12 +305,13 @@ if DEBUG:
         },
     }
 
-    # Anular la limitación de peticiones en modo DEBUG para facilitar el desarrollo
-    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+    # En DEBUG se relajan los límites globales, pero se conservan los scopes
+    # de autenticación para que los throttles por endpoint sigan funcionando.
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"].update({
         "anon": "1000/day",
         "user": "5000/day",
-        "auth": "100/minute",  # Permitir 100 inicios de sesión por minuto
-    }
+        "auth": "100/minute",
+    })
 
 
 # Default primary key field type
