@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",  # Lista negra de tokens invalidados
     # Temporarily disabled for migration
     # "forum",
     "massaging",
@@ -141,7 +142,16 @@ REST_FRAMEWORK = {
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=365),
+    # Cada refresh genera un nuevo par de tokens y destruye el anterior.
+    # Previene ataques de repetición con tokens robados.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
+    # Usa el campo UUID del modelo User como identificador dentro del token
+    "USER_ID_CLAIM": "user_id",
+    "USER_ID_FIELD": "id",
+    # Firma con una clave JWT dedicada si está disponible, si no usa SECRET_KEY
+    "SIGNING_KEY": os.getenv("JWT_SECRET_KEY", SECRET_KEY),
 }
 
 
