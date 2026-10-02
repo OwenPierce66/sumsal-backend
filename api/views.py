@@ -560,6 +560,25 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     lookup_field = "id"
 
+    def get_queryset(self):
+        # Precarga todas las relaciones que TaskSerializer accede para eliminar N+1
+        return ms.Task.objects.select_related(
+            "user",
+            "user__profile",
+        ).prefetch_related(
+            "subtasks",
+            "subfactores",
+            "subfuentes",
+            "likes",
+            "likes__user",
+            "post_comments",
+            "post_comments__created_by",
+            "post_comments__likes",
+            "shared_instances",
+            "shared_instances__shared_by",
+            "shared_instances__shared_by__profile",
+        )
+
     def perform_update(self, serializer):
         if serializer.instance.user != self.request.user and not self.request.user.is_staff:
             raise PermissionDenied("No tienes permiso para editar esta tarea.")
@@ -784,7 +803,19 @@ class TaskCommentListCreateView(generics.ListCreateAPIView):
         # 🛡️ FIX 500: Usamos "replies" porque así se llama el related_name en models.py
         return ms.NewPeticionCommentPost.objects.filter(
             post_id=task_id, parent__isnull=True
-        ).select_related("created_by__profile").prefetch_related("replies", "likes")
+        ).select_related(
+            "created_by",
+            "created_by__profile",
+        ).prefetch_related(
+            "replies",
+            "replies__created_by",
+            "replies__created_by__profile",
+            "replies__likes",
+            "replies__replies",
+            "replies__replies__created_by",
+            "replies__replies__likes",
+            "likes",
+        )
 
     def perform_create(self, serializer):
         task_id = self.kwargs.get("task_id")
@@ -1116,8 +1147,24 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         if recommended_users_only in ['true', '1', 'True', True]:
             qs = qs.filter(shared_by__profile__is_recommended=True) | qs.filter(task__user__profile__is_recommended=True)
             
-        qs = qs.select_related("task", "shared_by").prefetch_related("likes", "comments")
-        
+        qs = qs.select_related(
+            "task",
+            "task__user",
+            "task__user__profile",
+            "shared_by",
+            "shared_by__profile",
+        ).prefetch_related(
+            "likes",
+            "likes__user",
+            "comments",
+            "comments__created_by",
+            "comments__created_by__profile",
+            "task__subtasks",
+            "task__subfuentes",
+            "task__subfactores",
+            "task__shared_instances__shared_by",
+        )
+
         if sort_by == "likes":
             qs = qs.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
         else:
