@@ -283,8 +283,6 @@ class UserMeView(APIView):
         user = request.user
         
         image_file = request.FILES.get('user_image')
-        if image_file:
-        else:
 
         # La imagen se valida y guarda por separado para no volver a validar
         # el archivo después de que Django ya lo haya consumido.
