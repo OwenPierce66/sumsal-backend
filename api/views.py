@@ -268,6 +268,7 @@ class LogoutView(APIView):
 
 class UserMeView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ts.UserMeThrottle]
     # ⚡ AÑADIMOS PARSERS PARA ACEPTAR IMÁGENES (multipart/form-data)
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -339,6 +340,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
     # ✅ FIX 401: Permitir que cualquiera vea la lista (GET),
     # pero solo usuarios autenticados puedan crear (POST).
     permission_classes = [IsAuthenticatedOrReadOnly]
+    throttle_classes = [ts.BurstThrottle, ts.SustainedThrottle]
     pagination_class = StandardPagination
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -558,6 +560,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = ms.Task.objects.all()
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
+    throttle_classes = [ts.UploadThrottle, ts.SustainedThrottle]
     lookup_field = "id"
 
     def get_queryset(self):
@@ -1095,6 +1098,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
     # ✅ FIX 401: Permitir que cualquiera vea la lista (GET),
     # pero solo usuarios autenticados puedan compartir (POST).
     permission_classes = [IsAuthenticatedOrReadOnly]
+    throttle_classes = [ts.BurstThrottle, ts.SustainedThrottle]
     pagination_class = StandardPagination
 
     def get_queryset(self):
