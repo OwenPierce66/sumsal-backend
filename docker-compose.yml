@@ -13,6 +13,19 @@ services:
       - postgres_data:/var/lib/postgresql/data
     env_file: .env
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis-docker
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
   django:
     build:
       context: .
@@ -20,7 +33,9 @@ services:
         - DEV=true
     container_name: django-docker
     depends_on:
-      db:                          
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - .:/app      # Hot-reload: Maps your code into the container. AI did it
@@ -30,6 +45,7 @@ services:
       - FORCE_COLOR=1       # 2. Tells Rich (and other tools) to use ANSI colors
       - TERM=xterm-256color # 3. Mimics a high-color terminal inside the container
       - DATABASE_URL=postgres://dbuser:dbpassword@db:5432/dockerdjango
+      - REDIS_URL=redis://redis:6379/1
     env_file: .env
 
   frontend-proxy:
@@ -43,5 +59,7 @@ services:
       - ./media:/media:ro
     depends_on:
       - django
+
 volumes:
   postgres_data: {}
+  redis_data: {}

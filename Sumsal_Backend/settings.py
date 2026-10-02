@@ -245,6 +245,47 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 
 # ============================================================================
+# CACHÉ — Redis (producción y desarrollo con Docker)
+# Fallback a LocMemCache si REDIS_URL no está definida (p.ej. tests CI sin Redis)
+# ============================================================================
+
+_REDIS_URL = os.getenv("REDIS_URL", "")
+
+if _REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": _REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                # Compresión automática de valores > 1KB con zlib
+                "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
+                # Tiempo de espera para operaciones Redis (ms)
+                "SOCKET_CONNECT_TIMEOUT": 5,
+                "SOCKET_TIMEOUT": 5,
+                # Reintentar si la conexión cae
+                "CONNECTION_POOL_KWARGS": {"max_connections": 50},
+            },
+            # Prefijo para aislar esta app de otras que usen el mismo Redis
+            "KEY_PREFIX": "sumsal",
+            # TTL por defecto: 5 minutos (alineado con staleTime de React Query)
+            "TIMEOUT": 300,
+        }
+    }
+    # Las sesiones se guardan en caché primero, luego en BD (más rápido)
+    SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
+    SESSION_CACHE_ALIAS = "default"
+else:
+    # Sin Redis: caché en memoria por proceso (funciona en tests y CI sin Docker)
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "sumsal-locmem",
+        }
+    }
+
+
+# ============================================================================
 # SEGURIDAD HTTP — Headers de protección para la API
 # ============================================================================
 

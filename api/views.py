@@ -46,8 +46,28 @@ from itertools import chain
 from massaging.models import Message
 from . import throttling as ts
 from django.db.models import Case, F, IntegerField, Value, When
+from django.core.cache import cache
+import hashlib
 
 User = get_user_model()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CACHÉ POR USUARIO — helper para cachear respuestas de lista
+# ─────────────────────────────────────────────────────────────────────────────
+
+def make_cache_key(prefix: str, user_id, query_params: dict, timeout: int = 300) -> str:
+    """
+    Genera una clave de caché única por: prefijo + usuario + parámetros de consulta.
+
+    Usar el user_id en la clave garantiza que nunca se mezclen respuestas de
+    usuarios distintos (cada uno ve sus favoritos, filtros personalizados, etc.).
+    Los query_params se hashean con MD5 para mantener la clave corta.
+    """
+    params_str = "&".join(f"{k}={v}" for k, v in sorted(query_params.items()))
+    params_hash = hashlib.md5(params_str.encode()).hexdigest()[:12]
+    return f"{prefix}:u{user_id}:{params_hash}"
+
 
 
 def filter_by_categories(queryset, category_filter, field_name):
@@ -422,22 +442,36 @@ class TaskListCreateView(generics.ListCreateAPIView):
         return qs
 
     def list(self, request, *args, **kwargs):
+        # ── Caché de lista por usuario + parámetros de consulta ──────────────
+        # TTL corto (60s) para que siempre se sientan actualizaciones recientes.
+        # POST invalida la caché del usuario automáticamente después de crear.
+        CACHE_TTL = 60
+        cache_key = make_cache_key(
+            "tasks_list",
+            request.user.id if request.user.is_authenticated else "anon",
+            dict(request.query_params),
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
         favorite_profile_ids = []
         if request.user.is_authenticated:
             favorite_profile_ids = list(
                 ms.pFavorito.objects.filter(user=request.user).values_list("perfil_id", flat=True)
             )
 
-
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
         serializer = self.get_serializer(page if page is not None else queryset, many=True)
         payload = serializer.data
 
-        preview = payload[:5] if isinstance(payload, list) else payload.get("results", [])[:5]
-
         if page is not None:
-            return self.get_paginated_response(payload)
+            response_data = self.get_paginated_response(payload).data
+            cache.set(cache_key, response_data, CACHE_TTL)
+            return Response(response_data)
+
+        cache.set(cache_key, payload, CACHE_TTL)
         return Response(payload)
     def post(self, request, *args, **kwargs):
         
