@@ -16,6 +16,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis-docker
+    mem_limit: 64m  
     ports:
       - "6379:6379"
     healthcheck:
@@ -32,6 +33,8 @@ services:
       args:
         - DEV=true
     container_name: django-docker
+    command: python manage.py runserver 0.0.0.0:8000 --noreload
+    mem_limit: 256m
     depends_on:
       db:
         condition: service_healthy
@@ -45,6 +48,7 @@ services:
       - FORCE_COLOR=1       # 2. Tells Rich (and other tools) to use ANSI colors
       - TERM=xterm-256color # 3. Mimics a high-color terminal inside the container
       - DATABASE_URL=postgres://dbuser:dbpassword@db:5432/dockerdjango
+      - PYTHONDONTWRITEBYTECODE=1
       - REDIS_URL=redis://redis:6379/1
     env_file: .env
 
