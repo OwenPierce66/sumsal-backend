@@ -19,6 +19,22 @@ from urllib.parse import urlparse
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ImproperlyConfigured
 
+# ─── Sentry (crash reporting) ─────────────────────────────────────────────────
+# Activa solo si SENTRY_DSN está definido en el entorno.
+# En local sin DSN, esta sección no tiene efecto.
+_SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+if _SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    sentry_sdk.init(
+        dsn=_SENTRY_DSN,
+        integrations=[DjangoIntegration()],
+        # Captura 10% de las transacciones para performance tracing
+        traces_sample_rate=0.1,
+        # No enviar datos personales (emails, IPs) a Sentry
+        send_default_pii=False,
+    )
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
