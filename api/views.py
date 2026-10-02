@@ -279,25 +279,17 @@ class UserMeView(APIView):
         """
         Permite a un usuario actualizar su propio perfil (nombre, apellido, imagen).
         """
-        print("\n[DEBUG] --- Petición PATCH a /api/users/me/ ---")
-        print(f"[DEBUG] Usuario: {request.user.email}")
-        print(f"[DEBUG] Content-Type: {request.content_type}")
-        print(f"[DEBUG] Datos recibidos (request.data): {request.data}")
-        print(f"[DEBUG] Archivos recibidos (request.FILES): {request.FILES}")
 
         user = request.user
         
         image_file = request.FILES.get('user_image')
         if image_file:
-            print(f"[DEBUG] Archivo de imagen encontrado: {image_file.name}")
         else:
-            print("[DEBUG] No se encontró 'user_image' en request.FILES.")
 
         # La imagen se valida y guarda por separado para no volver a validar
         # el archivo después de que Django ya lo haya consumido.
         profile_data = request.data.copy()
         profile_data.pop('user_image', None)
-        print(f"[DEBUG] Datos de usuario a pasar al serializador: {profile_data}")
 
         with transaction.atomic():
             serializer = UserSerializer(
@@ -310,7 +302,6 @@ class UserMeView(APIView):
             serializer.save()
             if image_file:
                 ms.ImagenFija.objects.create(user=user, image=image_file)
-                print("[DEBUG] Objeto ImagenFija creado en la base de datos.")
 
         return Response(SimpleUserSerializer(user, context={'request': request}).data)
 
@@ -437,13 +428,6 @@ class TaskListCreateView(generics.ListCreateAPIView):
                 ms.pFavorito.objects.filter(user=request.user).values_list("perfil_id", flat=True)
             )
 
-        print("[TaskListCreateView] list auth debug", {
-            "is_authenticated": bool(request.user and request.user.is_authenticated),
-            "request_user_id": str(request.user.id) if request.user.is_authenticated else None,
-            "request_user_username": getattr(request.user, "username", None) if request.user.is_authenticated else None,
-            "favorite_profile_ids": [str(profile_id) for profile_id in favorite_profile_ids],
-            "query_params": dict(request.query_params),
-        })
 
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)
@@ -451,24 +435,11 @@ class TaskListCreateView(generics.ListCreateAPIView):
         payload = serializer.data
 
         preview = payload[:5] if isinstance(payload, list) else payload.get("results", [])[:5]
-        print("[TaskListCreateView] list payload preview", [
-            {
-                "task_id": str(item.get("id")),
-                "shared_by_list_count": len(item.get("shared_by_list") or []),
-                "favorite_sharers_count": item.get("favorite_sharers_count"),
-                "favorite_shared_by": item.get("favorite_shared_by"),
-                "favorite_shared_by_list": item.get("favorite_shared_by_list"),
-            }
-            for item in preview
-        ])
 
         if page is not None:
             return self.get_paginated_response(payload)
         return Response(payload)
     def post(self, request, *args, **kwargs):
-        print("====== LLAVES RECIBIDAS DESDE REACT NATIVE ======")
-        print(request.data.keys())
-        print("=================================================")
         
         # 1. Extraemos los datos básicos y creamos la tarea PRINCIPAL
         data = request.data.dict() if hasattr(request.data, 'dict') else request.data
@@ -595,11 +566,6 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         if serializer.instance.user != self.request.user and not self.request.user.is_staff:
             raise PermissionDenied("No tienes permiso para editar esta tarea.")
         task = serializer.save()
-        print("[TaskDetailView] task updated", {
-            "task_id": str(task.id),
-            "user_id": str(self.request.user.id),
-            "fields": list(serializer.validated_data.keys()),
-        })
         block_models = {
             "subtasks": ms.SubTask,
             "subfactores": ms.SubFactores,
@@ -667,11 +633,6 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
                     kept_ids.add(block.id)
 
             block_model.objects.filter(parent_task=task).exclude(id__in=kept_ids).delete()
-            print("[TaskDetailView] nested blocks synced", {
-                "task_id": str(task.id),
-                "field": field_name,
-                "kept_ids": [str(block_id) for block_id in kept_ids],
-            })
 
     def perform_destroy(self, instance):
         if instance.user != self.request.user and not self.request.user.is_staff:
@@ -1172,18 +1133,15 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         if not task_id:
             return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
         
-        print(f"\n[BACKEND LOG] --- Iniciando 'create' en SharedTaskListCreateView para task_id: {task_id} ---")
 
         # Bloqueamos la tarea para actualizarla de forma segura
         task = get_object_or_404(ms.Task.objects.select_for_update(), id=task_id)
-        print(f"[BACKEND LOG] Tarea encontrada. Valores ANTES de actualizar: share_count={task.share_count}, interaction_score={task.interaction_score}")
 
         shared, created = ms.SharedTask.objects.get_or_create(
             task=task,
             shared_by=request.user,
             defaults={"description": request.data.get("description", "")},
         )
-        print(f"[BACKEND LOG] SharedTask 'created': {created}")
 
         # ✅ FIX LÓGICA DE CONTADORES:
         # 1. El share_count SIEMPRE se incrementa.
@@ -1193,7 +1151,6 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 
         update_fields = {'share_count': F('share_count') + 1}
         if not has_interacted_before:
-            print("[BACKEND LOG] Primera interacción del usuario. Incrementando interaction_score.")
             update_fields['interaction_score'] = F('interaction_score') + 1
             # Registramos la interacción en el modelo Like para que no vuelva a contar.
             interaction, interaction_created = ms.Like.objects.get_or_create(
@@ -1208,7 +1165,6 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 
         # Recargamos la tarea desde la DB para obtener los contadores actualizados.
         task.refresh_from_db()
-        print(f"[BACKEND LOG] Tarea recargada desde DB. Valores DESPUÉS de actualizar: share_count={task.share_count}, interaction_score={task.interaction_score}")
 
         if created:
             status_code = status.HTTP_201_CREATED
@@ -1219,8 +1175,6 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             status_code = status.HTTP_200_OK
 
         serializer = self.get_serializer(shared)
-        print("[BACKEND LOG] Serializando y enviando respuesta al frontend...")
-        print(f"[BACKEND LOG] --- Fin del proceso para task_id: {task_id} ---\n")
         return Response(serializer.data, status=status_code)
 
 
@@ -1684,14 +1638,12 @@ def obtener_imagen_fija_usuario(request, user_id):
 @permission_classes([IsAuthenticated])
 def get_user_details(request):
     # ✅ DEBUG: Imprime los datos del usuario en la terminal del backend
-    print(f"[DEBUG] get_user_details para: {request.user.username}, is_staff: {request.user.is_staff}, is_superuser: {request.user.is_superuser}")
     # 1. Obtenemos los datos base del serializador
     user_data = UserSerializer(request.user, context={'request': request}).data
     # 2. Añadimos los campos de admin
     user_data['is_staff'] = request.user.is_staff
     user_data['is_superuser'] = request.user.is_superuser
     
-    print(f"[DEBUG] Enviando user_data: {user_data}")
     return Response(user_data) # 3. Enviamos la respuesta completa
 
 @api_view(["GET"])

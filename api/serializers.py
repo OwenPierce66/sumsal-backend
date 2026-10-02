@@ -510,21 +510,12 @@ class TaskSerializer(serializers.ModelSerializer):
     def _get_favorite_profile_ids(self):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
-            print("[TaskSerializer] favorite sharers auth missing", {
-                "has_request": bool(request),
-                "is_authenticated": bool(getattr(getattr(request, "user", None), "is_authenticated", False)),
-            })
             return set()
 
         if not hasattr(self, "_favorite_profile_ids_cache"):
             self._favorite_profile_ids_cache = set(
                 ms.pFavorito.objects.filter(user=request.user).values_list("perfil_id", flat=True)
             )
-            print("[TaskSerializer] favorite profile ids", {
-                "request_user_id": str(request.user.id),
-                "request_user_username": getattr(request.user, "username", None),
-                "favorite_profile_ids": [str(profile_id) for profile_id in self._favorite_profile_ids_cache],
-            })
         return self._favorite_profile_ids_cache
 
     def _get_favorite_shared_by_list(self, obj):
@@ -545,12 +536,6 @@ class TaskSerializer(serializers.ModelSerializer):
         for share in self._get_sorted_shared_instances(obj):
             if share.shared_by_id in favorite_profile_ids:
                 favorite_shared.append(self._serialize_shared_instance(share, request))
-        print("[TaskSerializer] favorite sharers per task", {
-            "task_id": str(obj.id),
-            "shared_by_ids": [str(share.shared_by_id) for share in self._get_sorted_shared_instances(obj)],
-            "favorite_profile_ids": [str(profile_id) for profile_id in favorite_profile_ids],
-            "matched_favorite_sharer_ids": [str(item["id"]) for item in favorite_shared if item.get("id")],
-        })
         self._favorite_shared_by_cache[task_key] = favorite_shared
         return self._favorite_shared_by_cache[task_key]
 
@@ -604,7 +589,6 @@ class TaskSerializer(serializers.ModelSerializer):
             total = sum(self._count_nested_comments(c) for c in parent_comments)
             return total
         except Exception as e:
-            print(f"Error counting comments: {e}")
             return 0
     
 
