@@ -243,6 +243,34 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+
+# ============================================================================
+# SEGURIDAD HTTP — Headers de protección para la API
+# ============================================================================
+
+# Previene que el navegador adivine el tipo MIME (MIME sniffing attacks)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# Instruye al navegador a no renderizar esta API en un <iframe>
+# (DENY es más estricto que SAMEORIGIN — no hay motivo para embeber una API)
+X_FRAME_OPTIONS = "DENY"
+
+# Referrer: envía el origen completo en peticiones al mismo dominio,
+# solo el origen (sin path) en peticiones HTTPS a dominios externos,
+# y nada en peticiones HTTP externas.
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+
+# En producción (detrás de Nginx con HTTPS):
+# - Informar a Django que el proxy SSL está activo
+# - Redirigir HTTP → HTTPS automáticamente
+# - HSTS: pedirle al navegador que solo acceda por HTTPS durante 1 año
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000          # 1 año
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+
 if DEBUG:
     import socket
     import builtins
