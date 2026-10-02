@@ -271,8 +271,10 @@ class TaskUpdateRegressionTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         subtask.refresh_from_db()
-        self.assertTrue(bool(subtask.image))
-        self.assertTrue(subtask.image.name.endswith("updated.png"))
+        # Django puede renombrar el archivo con un sufijo único (e.g. updated_abc123.png)
+        # Verificamos que la imagen se guardó y que el nombre contiene la base original
+        self.assertTrue(bool(subtask.image), "La imagen debería haberse guardado")
+        self.assertIn("updated", subtask.image.name)
 
 
 class SharedTaskViewRegressionTests(TestCase):
@@ -374,7 +376,7 @@ class pFavoritoViewRegressionTests(TestCase):
         client.force_authenticate(user=viewer)
 
         response = client.post(
-            reverse("agregar-pfavorito"),
+            reverse("pfavorito-add"),
             {"perfil_id": str(target_user.id)},
             format="json",
         )
