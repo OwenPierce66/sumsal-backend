@@ -260,19 +260,20 @@ if _REDIS_URL:
                 "CLIENT_CLASS": "django_redis.client.DefaultClient",
                 # Compresión automática de valores > 1KB con zlib
                 "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
-                # Tiempo de espera para operaciones Redis (ms)
+                # Tiempo de espera para operaciones Redis
                 "SOCKET_CONNECT_TIMEOUT": 5,
                 "SOCKET_TIMEOUT": 5,
-                # Reintentar si la conexión cae
+                # Pool de conexiones
                 "CONNECTION_POOL_KWARGS": {"max_connections": 50},
+                # ⚡ CLAVE: Si Redis está caído, las operaciones de caché
+                # silenciosamente devuelven None en lugar de lanzar excepción.
+                # El app sigue funcionando, solo sin caché (degrada con gracia).
+                "IGNORE_EXCEPTIONS": True,
             },
-            # Prefijo para aislar esta app de otras que usen el mismo Redis
             "KEY_PREFIX": "sumsal",
-            # TTL por defecto: 5 minutos (alineado con staleTime de React Query)
             "TIMEOUT": 300,
         }
     }
-    # Las sesiones se guardan en caché primero, luego en BD (más rápido)
     SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
     SESSION_CACHE_ALIAS = "default"
 else:
