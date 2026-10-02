@@ -264,6 +264,18 @@ class Task(TimeStampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            # Feed principal: filtro por tipo (pch) + fecha DESC
+            models.Index(fields=["pch", "-created_at"], name="task_pch_date_idx"),
+            # Perfil de usuario: sus tareas ordenadas por fecha
+            models.Index(fields=["user", "-created_at"], name="task_user_date_idx"),
+            # Filtro combinado tipo + propietario
+            models.Index(fields=["pch", "user"], name="task_pch_user_idx"),
+            # Ranking por interacción (sort_by=likes)
+            models.Index(fields=["-interaction_score", "-created_at"], name="task_score_date_idx"),
+            # Historias: pch=historias filtradas por story_is_shared
+            models.Index(fields=["pch", "story_is_shared"], name="task_pch_shared_idx"),
+        ]
 
     def __str__(self):
         return self.title or "Untitled Task"
@@ -328,6 +340,12 @@ class Favorito(models.Model):
 
     class Meta:
         unique_together = ("user", "task")
+        indexes = [
+            # Lista de favoritos del usuario (pantalla Favoritos)
+            models.Index(fields=["user", "-created_at"], name="favorito_user_date_idx"),
+            # Favoritos anclados arriba
+            models.Index(fields=["user", "is_pinned", "position"], name="favorito_user_pin_idx"),
+        ]
 
 
 class pFavorito(models.Model):
@@ -350,6 +368,17 @@ class SharedTask(TimeStampedModel):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="shared_instances")
     shared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shares")
     description = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            # Feed de compartidas: por fecha DESC
+            models.Index(fields=["-created_at"], name="sharedtask_date_idx"),
+            # Compartidas de una tarea concreta (pantalla de detalle)
+            models.Index(fields=["task", "-created_at"], name="sharedtask_task_date_idx"),
+            # Compartidas de un usuario
+            models.Index(fields=["shared_by", "-created_at"], name="sharedtask_by_date_idx"),
+        ]
 
 
 class TaskTag(TimeStampedModel):
@@ -416,6 +445,10 @@ class NewPeticionCommentPost(TimeStampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            # Comentarios raíz de una tarea (parent=None)
+            models.Index(fields=["post", "parent", "-created_at"], name="comment_post_parent_idx"),
+        ]
 
 
 class LikeCommentPost(TimeStampedModel):
@@ -439,6 +472,10 @@ class SharedTaskComment(TimeStampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            # Comentarios de una tarea compartida (parent=None primero)
+            models.Index(fields=["shared_task", "parent", "-created_at"], name="stcomment_task_parent_idx"),
+        ]
 
 
 class LikeSharedTaskComment(TimeStampedModel):
@@ -481,6 +518,15 @@ class Postt(TimeStampedModel):
     content = models.TextField()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="forum_posts")
     parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="forum_replies")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            # Posts raíz del foro (parent=None) ordenados por fecha
+            models.Index(fields=["parent", "-created_at"], name="postt_parent_date_idx"),
+            # Posts de un usuario
+            models.Index(fields=["user", "-created_at"], name="postt_user_date_idx"),
+        ]
 
 
 class LikePostt(TimeStampedModel):
