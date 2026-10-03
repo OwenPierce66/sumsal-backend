@@ -25,6 +25,8 @@ from .models import (
     APPROVED_TAG,
     STATUS_TAGS,
     SUBTHEME_NAMES,
+    Notification,   
+    PushToken,      
 )
 from .notifications import create_notification, retire_notification
 
@@ -606,3 +608,38 @@ def notify_group_message(sender, instance, created, **kwargs):
 @receiver(post_delete, sender=GroupMessage)
 def retire_group_message(sender, instance, **kwargs):
     _retire(instance, kwargs.get("origin"))
+# ── Push Notifications ────────────────────────────────────────────────────────
+
+@receiver(post_save, sender=Notification)
+def send_push_on_notification(sender, instance, created, **kwargs):
+    """
+    Envía una notificación push al recipient cuando se crea una Notification.
+    Usa data.title y data.excerpt que ya construye _notify().
+    Falla silenciosamente — el push nunca debe romper el request principal.
+    """
+    if not created:
+        return
+
+    tokens = list(
+        PushToken.objects.filter(user=instance.recipient, is_active=True)
+        .values_list("token", flat=True)
+    )
+    if not tokens:
+        return
+
+    from .utils.push_notifications import send_expo_push
+
+    title = instance.data.get("title") or "Sumsal"
+    body = instance.data.get("excerpt") or instance.data.get("text") or instance.notification_type
+
+    send_expo_push(
+        tokens,
+        title=title,
+        body=body,
+        data={
+            "notification_id": str(instance.id),
+            "type": instance.notification_type,
+            "target_type": instance.target_type,
+            "target_id": instance.target_id,
+        },
+    )

@@ -7,7 +7,7 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
 )
 
-
+from . import push_views
 # ─── Vistas JWT con throttling propio ────────────────────────────────────────
 class ThrottledLoginView(TokenObtainPairView):
     throttle_classes = [ts.LoginThrottle]
@@ -110,4 +110,6 @@ urlpatterns = [
     path('admin/users/<uuid:user_id>/recommend/', views.admin_recommend_user, name='admin-recommend-user'),
     path('admin/tasks/<uuid:task_id>/like/', views.admin_app_like_task, name='admin-task-like'),
     path('admin/profiles/<uuid:profile_id>/like/', views.admin_app_like_profile, name='admin-profile-like'),
+
+    path('push-tokens/', push_views.PushTokenView.as_view(), name='push-token-register'),  # ← agregar en urlpatterns
 ]
