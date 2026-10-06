@@ -50,6 +50,18 @@ def _message_preview(message):
     return "", "empty"
 
 
+CHAT_DEFAULT_PAGE_SIZE = 10
+CHAT_MAX_PAGE_SIZE = 100
+
+
+def _page_params(request, default_size=CHAT_DEFAULT_PAGE_SIZE):
+    """Lee `page` y `page_size` de la query. Lanza ValueError/TypeError si no son enteros."""
+    page = max(int(request.query_params.get('page', 1)), 1)
+    page_size = int(request.query_params.get('page_size', default_size))
+    page_size = min(max(page_size, 1), CHAT_MAX_PAGE_SIZE)
+    return page, page_size
+
+
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def delete_message(request, message_id):
@@ -329,19 +341,18 @@ def message_list(request):
             )
 
         try:
-            page = max(int(request.query_params.get('page', 1)), 1)
+            page, page_size = _page_params(request)
         except (TypeError, ValueError):
             return Response(
                 {"error": "Invalid page"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        page_size = 10
 
         try:
             messages = Message.objects.filter(
                 Q(sender=request.user, receiver=other_user)
                 | Q(sender=other_user, receiver=request.user)
-            ).order_by('-timestamp')
+            ).order_by('-timestamp', '-id')
 
             Message.objects.filter(
                 sender=other_user,
@@ -588,7 +599,16 @@ def group_messages(request, group_id):
     messages = GroupMessage.objects.filter(
         group=group,
         timestamp__lte=opened_at,
-    ).order_by('-timestamp')
+    ).order_by('-timestamp', '-id')
+    # Paginación opcional: sin `page` se devuelve el historial completo
+    # (compatibilidad con clientes antiguos).
+    if 'page' in request.query_params:
+        try:
+            page, page_size = _page_params(request)
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid page'}, status=status.HTTP_400_BAD_REQUEST)
+        start = (page - 1) * page_size
+        messages = messages[start:start + page_size]
     serializer = GroupMessageSerializer(messages, many=True, context={'request': request})
     data = serializer.data
     membership.last_read_at = opened_at
