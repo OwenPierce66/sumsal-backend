@@ -27,6 +27,13 @@ class PushTokenView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        max_length = PushToken._meta.get_field("token").max_length
+        if len(token) > max_length:
+            return Response(
+                {"error": f"token excede los {max_length} caracteres permitidos."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         if platform not in {"ios", "android", "web"}:
             platform = "ios"
 

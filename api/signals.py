@@ -1,3 +1,6 @@
+import logging
+
+from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
@@ -31,6 +34,7 @@ from .models import (
 from .notifications import create_notification, retire_notification
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 @receiver(post_save, sender=User)
@@ -613,9 +617,13 @@ def retire_group_message(sender, instance, **kwargs):
 @receiver(post_save, sender=Notification)
 def send_push_on_notification(sender, instance, created, **kwargs):
     """
-    Envía una notificación push al recipient cuando se crea una Notification.
-    Usa data.title y data.excerpt que ya construye _notify().
-    Falla silenciosamente — el push nunca debe romper el request principal.
+    Encola el envío de push en Celery cuando se crea una Notification.
+
+    - La respuesta HTTP al usuario no espera a Expo: Celery procesa el envío.
+    - El encolado se hace en `transaction.on_commit`: si la transacción se
+      revierte no se envía un push de una notificación que no existe.
+    - Falla silenciosamente: el push nunca debe romper el request principal
+      (p. ej. si el broker Redis está caído).
     """
     if not created:
         return
@@ -627,19 +635,30 @@ def send_push_on_notification(sender, instance, created, **kwargs):
     if not tokens:
         return
 
-    from .utils.push_notifications import send_expo_push
-
     title = instance.data.get("title") or "Sumsal"
-    body = instance.data.get("excerpt") or instance.data.get("text") or instance.notification_type
-
-    send_expo_push(
-        tokens,
-        title=title,
-        body=body,
-        data={
-            "notification_id": str(instance.id),
-            "type": instance.notification_type,
-            "target_type": instance.target_type,
-            "target_id": instance.target_id,
-        },
+    body = (
+        instance.data.get("excerpt")
+        or instance.data.get("text")
+        or instance.notification_type
     )
+    payload = {
+        "notification_id": str(instance.id),
+        "type": instance.notification_type,
+        "target_type": instance.target_type,
+        "target_id": instance.target_id,
+    }
+
+    def _enqueue():
+        from .tasks import send_push_notification_task
+
+        try:
+            send_push_notification_task.delay(
+                tokens=tokens,
+                title=title,
+                body=body,
+                data=payload,
+            )
+        except Exception:
+            logger.exception("[push] No se pudo encolar la notificación %s", instance.id)
+
+    transaction.on_commit(_enqueue)
