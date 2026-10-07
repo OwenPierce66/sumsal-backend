@@ -24,7 +24,7 @@ class NotificationListView(generics.ListAPIView):
     def get_queryset(self):
         notifications = Notification.objects.filter(
             recipient=self.request.user
-        ).select_related("actor")
+        ).select_related("actor").prefetch_related("actor__fixed_images")
         if self.request.query_params.get("unread", "").lower() in {
             "1",
             "true",

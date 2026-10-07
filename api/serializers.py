@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import OuterRef, Subquery, Count, Q
 from django.conf import settings
 from . import models as ms
+from .upload_validation import validate_image_upload, validate_video_upload
 
 User = get_user_model()
 
@@ -38,6 +39,55 @@ def file_to_abs_url(file_or_str, request=None):
         return request.build_absolute_uri(url)
 
     return url
+
+
+# ---------------------------------------------------------------------------
+# Helpers anti N+1 (Fase 36)
+# ---------------------------------------------------------------------------
+
+def is_prefetched(obj, relation):
+    """True si `relation` ya fue cargada con prefetch_related en `obj`."""
+    return relation in getattr(obj, "_prefetched_objects_cache", {})
+
+
+def related_count(obj, relation):
+    """Cuenta una relaci??n reutilizando el prefetch si existe (evita un COUNT por fila)."""
+    if is_prefetched(obj, relation):
+        return len(getattr(obj, relation).all())
+    return getattr(obj, relation).count()
+
+
+def related_has_user(obj, relation, user):
+    """??`user` aparece en `relation` (likes, etc.)? Usa el prefetch si existe."""
+    if is_prefetched(obj, relation):
+        return any(item.user_id == user.id for item in getattr(obj, relation).all())
+    return getattr(obj, relation).filter(user=user).exists()
+
+
+def my_ids(request, key, model, field):
+    """
+    Conjunto de ids (`field`) de los registros de `model` creados por el usuario
+    autenticado. Se consulta UNA vez por petici??n y se reutiliza para todos los
+    items de la lista (en vez de un `.exists()` por item).
+    """
+    if not request or not request.user.is_authenticated:
+        return set()
+    cache = request.__dict__.setdefault("_perf_cache", {})
+    if key not in cache:
+        cache[key] = set(
+            model.objects.filter(user=request.user).values_list(field, flat=True)
+        )
+    return cache[key]
+
+
+def latest_user_image_url(user, request=None):
+    """URL absoluta de la ??ltima ImagenFija del usuario (usa prefetch `fixed_images`)."""
+    if is_prefetched(user, "fixed_images"):
+        images = list(user.fixed_images.all())
+        image = max(images, key=lambda i: i.id) if images else None
+    else:
+        image = ms.ImagenFija.objects.filter(user=user).order_by("-id").first()
+    return file_to_abs_url(image.image if image and image.image else None, request)
 
 
 class ProfileSerializer(serializers.ModelSerializer):
@@ -250,28 +300,23 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             # `pFavorito` se relaciona con el usuario objetivo, no con el perfil.
-            return ms.pFavorito.objects.filter(user=request.user, perfil=obj).exists()
+            return obj.pk in my_ids(request, "pfav", ms.pFavorito, "perfil_id")
         return False
 
     def get_likes_count(self, obj):
         # ✅ FIX DEFINITIVO: El modelo LikeP.profile ahora apunta a User, no a Profile.
         # Usamos `obj` (que es un User) directamente en la consulta.
         # Esto soluciona el error fatal que tumbaba el servidor.
-        return obj.likes_received.count()
-        return 0
+        return related_count(obj, "likes_received")
 
     def get_user_image(self, obj):
-        imagen_fija = ms.ImagenFija.objects.filter(user=obj).last()
-        if imagen_fija and imagen_fija.image:
-            request = self.context.get("request")
-            return file_to_abs_url(imagen_fija.image, request)
-        return None
+        return latest_user_image_url(obj, self.context.get("request"))
 
     def get_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
             # ✅ FIX DEFINITIVO: Usamos `obj` (User) directamente, igual que en get_likes_count.
-            return ms.LikeP.objects.filter(user=request.user, profile=obj).exists()
+            return obj.pk in my_ids(request, "likep", ms.LikeP, "profile_id")
         return False
 
 
@@ -358,12 +403,12 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by", "post"]
 
     def get_likes_count(self, obj):
-        return obj.likes.count()
+        return related_count(obj, "likes")
 
     def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return obj.likes.filter(user=request.user).exists()
+            return related_has_user(obj, "likes", request.user)
         return False
     
 class SubTaskSerializer(serializers.ModelSerializer):
@@ -408,6 +453,12 @@ class TaskSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ["id", "user", "share_count", "created_at"]
 
+    def validate_video(self, value):
+        return validate_video_upload(value)
+
+    def validate_image(self, value):
+        return validate_image_upload(value)
+
     def get_is_original(self, obj):
         # Por defecto, si serializamos una Task directamente, es original.
         return True
@@ -427,7 +478,13 @@ class TaskSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return None
-        invitation = obj.podcast_invitations.filter(user=request.user).first()
+        if is_prefetched(obj, "podcast_invitations"):
+            invitation = next(
+                (i for i in obj.podcast_invitations.all() if i.user_id == request.user.id),
+                None,
+            )
+        else:
+            invitation = obj.podcast_invitations.filter(user=request.user).first()
         return invitation.status if invitation else None
 
     def validate(self, attrs):
@@ -463,7 +520,7 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_is_favorited(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return ms.Favorito.objects.filter(user=request.user, task=obj).exists()
+            return obj.pk in my_ids(request, "fav", ms.Favorito, "task_id")
         return False
 
     def _get_share_img_cache(self):
@@ -494,11 +551,7 @@ class TaskSerializer(serializers.ModelSerializer):
 
         share_img_cache = self._get_share_img_cache()
         if shared_by.id not in share_img_cache:
-            imagen_fija = ms.ImagenFija.objects.filter(user=shared_by).order_by("-id").first()
-            share_img_cache[shared_by.id] = file_to_abs_url(
-                imagen_fija.image if imagen_fija and imagen_fija.image else None,
-                request,
-            )
+            share_img_cache[shared_by.id] = latest_user_image_url(shared_by, request)
 
         return {
             "id": shared_by.id,
@@ -513,8 +566,8 @@ class TaskSerializer(serializers.ModelSerializer):
             return set()
 
         if not hasattr(self, "_favorite_profile_ids_cache"):
-            self._favorite_profile_ids_cache = set(
-                ms.pFavorito.objects.filter(user=request.user).values_list("perfil_id", flat=True)
+            self._favorite_profile_ids_cache = my_ids(
+                request, "pfav", ms.pFavorito, "perfil_id"
             )
         return self._favorite_profile_ids_cache
 
@@ -559,13 +612,13 @@ class TaskSerializer(serializers.ModelSerializer):
     def _count_nested_comments(self, comment):
         """Cuenta un comentario y todas sus respuestas recursivamente"""
         count = 1  # Contar el comentario actual
-        replies = comment.replies.all()  # Acceder a las respuestas anidadas
+        replies = comment.replies.all()  # Acceder a las respuestas anidadas (usa prefetch si existe)
         for reply in replies:
             count += self._count_nested_comments(reply)
         return count
 
     def get_likes_count(self, obj):
-        return obj.likes.count()
+        return related_count(obj, "likes")
 
     def get_views_count(self, obj):
         if obj.pch != "historias":
@@ -578,14 +631,15 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return obj.likes.filter(user=request.user).exists()
+            return related_has_user(obj, "likes", request.user)
         return False
     
     def get_comments_count(self, obj):
         """Devuelve el total de comentarios anidados"""
         try:
-            # Obtener solo los comentarios padre (sin parent)
-            parent_comments = obj.post_comments.filter(parent__isnull=True)
+            # Obtener solo los comentarios padre (sin parent). Se filtra en Python
+            # para reutilizar el prefetch de `post_comments`.
+            parent_comments = [c for c in obj.post_comments.all() if c.parent_id is None]
             total = sum(self._count_nested_comments(c) for c in parent_comments)
             return total
         except Exception as e:
@@ -614,16 +668,16 @@ class SharedTaskSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "shared_by", "created_at"]
 
     def get_likes_count(self, obj):
-        return obj.likes.count()
+        return related_count(obj, "likes")
 
     def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return ms.LikeSharedTask.objects.filter(user=request.user, shared_task=obj).exists()
+            return related_has_user(obj, "likes", request.user)
         return False
 
     def get_comments_count(self, obj):
-        parent_comments = obj.comments.filter(parent__isnull=True)
+        parent_comments = [c for c in obj.comments.all() if c.parent_id is None]
         total = 0
         for comment in parent_comments:
             total += self._count_nested_comments(comment)
@@ -707,16 +761,17 @@ class PosttSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
     def get_replies(self, obj):
-        replies = ms.Postt.objects.filter(parent=obj)
+        # `forum_replies.all()` reutiliza el prefetch de la vista (si existe).
+        replies = obj.forum_replies.all()
         return PosttSerializer(replies, many=True, context=self.context).data
 
     def get_likes_count(self, obj):
-        return ms.LikePostt.objects.filter(post=obj).count()
+        return related_count(obj, "likes")
 
     def get_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return ms.LikePostt.objects.filter(user=request.user, post=obj).exists()
+            return related_has_user(obj, "likes", request.user)
         return False
 
 
@@ -754,12 +809,12 @@ class SharedTaskCommentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_by", "shared_task"]
 
     def get_likes_count(self, obj):
-        return obj.likes.count()
+        return related_count(obj, "likes")
 
     def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return ms.LikeSharedTaskComment.objects.filter(user=request.user, comment=obj).exists()
+            return related_has_user(obj, "likes", request.user)
         return False
 
 

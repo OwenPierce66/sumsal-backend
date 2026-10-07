@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.db.models import prefetch_related_objects
 from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.db import transaction, IntegrityError
 from django.shortcuts import get_object_or_404
@@ -65,7 +66,7 @@ def make_cache_key(prefix: str, user_id, query_params: dict, timeout: int = 300)
     Los query_params se hashean con MD5 para mantener la clave corta.
     """
     params_str = "&".join(f"{k}={v}" for k, v in sorted(query_params.items()))
-    params_hash = hashlib.md5(params_str.encode()).hexdigest()[:12]
+    params_hash = hashlib.md5(params_str.encode(), usedforsecurity=False).hexdigest()[:12]
     return f"{prefix}:u{user_id}:{params_hash}"
 
 
@@ -324,6 +325,39 @@ class UserMeView(APIView):
 
         return Response(SimpleUserSerializer(user, context={'request': request}).data)
 
+# Relaciones que TaskSerializer / SharedTaskSerializer / PosttSerializer recorren
+# por cada item. Precargarlas mantiene constante el n?? de queries por p??gina (Fase 36).
+_USER_EXTRAS = ("profile", "fixed_images", "likes_received")
+TASK_SERIALIZER_PREFETCH = (
+    *(f"user__{rel}" for rel in _USER_EXTRAS),
+    "likes",
+    *(f"post_comments__created_by__{rel}" for rel in _USER_EXTRAS),
+    "post_comments__likes",
+    "post_comments__replies__likes",
+    "post_comments__replies__replies__replies",
+    *(f"post_comments__replies__created_by__{rel}" for rel in _USER_EXTRAS),
+    "tagged_users__user",
+    "podcast_invitations",
+    "subtasks",
+    "subfactores",
+    "subfuentes",
+    "shared_instances__shared_by__fixed_images",
+)
+SHARED_TASK_PREFETCH = (
+    *(f"shared_by__{rel}" for rel in _USER_EXTRAS),
+    "likes",
+    "comments__replies",
+    *(f"task__{rel}" for rel in TASK_SERIALIZER_PREFETCH),
+)
+POST_PREFETCH = (
+    *(f"user__{rel}" for rel in _USER_EXTRAS),
+    "likes",
+    "forum_replies__likes",
+    *(f"forum_replies__user__{rel}" for rel in _USER_EXTRAS),
+    "forum_replies__forum_replies",
+)
+
+
 class UserMyTasksView(generics.ListAPIView):
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
@@ -331,7 +365,7 @@ class UserMyTasksView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = ms.Task.objects.select_related("user").prefetch_related(
-            "shared_instances__shared_by"
+            *TASK_SERIALIZER_PREFETCH
         )
         return apply_task_filters(
             queryset,
@@ -377,10 +411,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
             self.request.query_params,
             owner_id=self.request.query_params.get("user_id"),
             request_user=self.request.user,
-        ).prefetch_related(
-            "likes", "post_comments", "subtasks", "subfuentes",
-            "subfactores", "shared_instances__shared_by"
-        )
+        ).prefetch_related(*TASK_SERIALIZER_PREFETCH)
 
         # Legacy filtering code below is intentionally unreachable while
         # retained temporarily for easier comparison during migration.
@@ -556,14 +587,7 @@ class StoryListCreateView(generics.ListCreateAPIView):
             .filter(media_filter)
             .annotate(views_count=Count("story_views", distinct=True))
             .select_related("user")
-            .prefetch_related(
-                "likes",
-                "post_comments",
-                "subtasks",
-                "subfactores",
-                "subfuentes",
-                "shared_instances__shared_by",
-            )
+            .prefetch_related(*TASK_SERIALIZER_PREFETCH)
             .order_by("-created_at")
             .distinct()
         )
@@ -881,6 +905,12 @@ class NewPeticionCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
     lookup_url_kwarg = "comment_id" # Django buscará el <int:comment_id> de la URL
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
+    def perform_update(self, serializer):
+        # 🛡️ SEGURIDAD: solo el creador del comentario (o un admin) puede editarlo
+        if serializer.instance.created_by != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para editar este comentario.")
+        serializer.save()
+
     def perform_destroy(self, instance):
         # 🛡️ SEGURIDAD: Solo el creador del comentario (o un admin) puede borrarlo
         if instance.created_by != self.request.user and not self.request.user.is_staff:
@@ -1056,7 +1086,7 @@ def share_task_to_story(request):
 # ============================================================================
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def users_who_liked_task(request, task_id):
     """ 
     Obtiene la lista de usuarios a los que les gustó una tarea.
@@ -1094,7 +1124,7 @@ def users_who_liked_task(request, task_id):
     return Response(out, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def users_who_liked_comment(request, comment_id):
     likes = ms.LikeCommentPost.objects.filter(comment_id=comment_id).select_related("user__profile")
     users = [like.user for like in likes if like.user]
@@ -1102,7 +1132,7 @@ def users_who_liked_comment(request, comment_id):
     return Response(serializer.data)
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def users_who_liked_shared_task(request, shared_task_id):
     likes = ms.LikeSharedTask.objects.filter(shared_task_id=shared_task_id).select_related("user__profile")
     users = [like.user for like in likes if like.user]
@@ -1110,7 +1140,7 @@ def users_who_liked_shared_task(request, shared_task_id):
     return Response(serializer.data)
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def users_who_liked_shared_comment(request, comment_id):
     likes = ms.LikeSharedTaskComment.objects.filter(comment_id=comment_id).select_related("user__profile")
     users = [like.user for like in likes if like.user]
@@ -1118,7 +1148,7 @@ def users_who_liked_shared_comment(request, comment_id):
     return Response(serializer.data)
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def users_who_shared_task(request, task_id):
     shares = ms.SharedTask.objects.filter(task_id=task_id).select_related("shared_by__profile")
     users = [share.shared_by for share in shares if share.shared_by]
@@ -1192,15 +1222,9 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             "shared_by",
             "shared_by__profile",
         ).prefetch_related(
-            "likes",
+            *SHARED_TASK_PREFETCH,
             "likes__user",
-            "comments",
-            "comments__created_by",
             "comments__created_by__profile",
-            "task__subtasks",
-            "task__subfuentes",
-            "task__subfactores",
-            "task__shared_instances__shared_by",
         )
 
         if sort_by == "likes":
@@ -1555,7 +1579,7 @@ def reorder_categoryp(request):
 
 
 @api_view(["GET"])
-@permission_classes([AllowAny])
+@permission_classes([IsAuthenticated])
 def list_categoryp_for_user(request, user_id):
     """Filtro personal de un perfil: siempre visible en su propio perfil."""
     cats = ms.CategoryP.objects.filter(user_id=user_id)
@@ -1802,7 +1826,7 @@ class FeedView(generics.ListAPIView):
         if sort_by != 'all':
             tasks = ms.Task.objects.annotate(
                 priority=user_priority
-            ).select_related('user__profile').prefetch_related('likes', 'post_comments', 'subtasks', 'subfactores', 'subfuentes')
+            ).select_related('user__profile').prefetch_related(*TASK_SERIALIZER_PREFETCH)
 
         # ✅ COMPORTAMIENTO PARA "all": Mostrar el feed unificado.
         else:
@@ -1845,6 +1869,15 @@ class FeedView(generics.ListAPIView):
         # ✅ FIX: Si el queryset es de Tasks, usamos TaskSerializer.
         # Si es una lista de FeedItem, usamos FeedItemSerializer.
         if isinstance(queryset, list) and queryset and isinstance(queryset[0], FeedItem):
+             # El feed unificado se ordena en memoria; solo se precargan las
+             # relaciones de los items de la pagina actual (no de todo el feed).
+             if page:
+                 prefetch_related_objects(
+                     [i.item for i in page if i.is_original], *TASK_SERIALIZER_PREFETCH
+                 )
+                 prefetch_related_objects(
+                     [i.item for i in page if not i.is_original], *SHARED_TASK_PREFETCH
+                 )
              serializer = self.get_serializer(page, many=True)
         elif page:
              # Si es un queryset de Task, usamos el serializador de Task.
@@ -2119,7 +2152,7 @@ class PostListCreateView(generics.ListCreateAPIView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
-        return ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related("likes", "forum_replies").order_by('-created_at')
+        return ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related(*POST_PREFETCH).order_by('-created_at')
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -2132,7 +2165,13 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        return super().get_queryset().select_related("user").prefetch_related("likes", "forum_replies")
+        return super().get_queryset().select_related("user").prefetch_related(*POST_PREFETCH)
+
+    def perform_update(self, serializer):
+        # 🛡️ SEGURIDAD: solo el autor (o staff) puede editar el post
+        if serializer.instance.user != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No autorizado para editar este post.")
+        serializer.save()
 
     def perform_destroy(self, instance):
         if instance.user != self.request.user and not self.request.user.is_staff:
@@ -2224,6 +2263,12 @@ class SharedTaskCommentDetailsView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     lookup_url_kwarg = "comment_id"
     parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def perform_update(self, serializer):
+        # 🛡️ SEGURIDAD: solo el creador del comentario (o staff) puede editarlo
+        if serializer.instance.created_by != self.request.user and not self.request.user.is_staff:
+            raise PermissionDenied("No tienes permiso para editar este comentario.")
+        serializer.save()
 
     def perform_destroy(self, instance):
         if instance.created_by != self.request.user and not self.request.user.is_staff:

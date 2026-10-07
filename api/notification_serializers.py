@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import ImagenFija, Notification
-from .serializers import file_to_abs_url
+from .serializers import file_to_abs_url, latest_user_image_url
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -32,7 +32,6 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_actor(self, obj):
         if not obj.actor:
             return None
-        image = ImagenFija.objects.filter(user=obj.actor).order_by("-id").first()
         full_name = " ".join(
             part for part in (obj.actor.first_name, obj.actor.last_name) if part
         )
@@ -40,10 +39,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "id": str(obj.actor_id),
             "username": obj.actor.username,
             "name": full_name or obj.actor.username or obj.actor.email,
-            "image": file_to_abs_url(
-                image.image if image else None,
-                self.context.get("request"),
-            ),
+            "image": latest_user_image_url(obj.actor, self.context.get("request")),
         }
 
     def get_text(self, obj):

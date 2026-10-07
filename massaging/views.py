@@ -14,6 +14,10 @@ from rest_framework import status
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
+import logging
+
+from api.upload_validation import validate_chat_uploads
+
 from .models import (
     Message,
     MessageLike,
@@ -392,7 +396,10 @@ def message_list(request):
         # 2) Datos simples
         content = request.data.get('content', '')
 
-        # 3) Archivos individuales
+        # 3) Archivos individuales (validados: tipo y tamano)
+        upload_error = validate_chat_uploads(request)
+        if upload_error:
+            return Response({"error": upload_error}, status=status.HTTP_400_BAD_REQUEST)
         image = request.FILES.get('image')
         video = request.FILES.get('video')
 
@@ -434,10 +441,11 @@ def message_list(request):
         )
         return Response(out_serializer.data, status=status.HTTP_201_CREATED)
 
-    except Exception as e:
-        import traceback
+    except Exception:
+        # El detalle (traceback) queda solo en el log del servidor.
+        logging.getLogger(__name__).exception("Error creando mensaje directo")
         return Response(
-            {"error": str(e), "traceback": traceback.format_exc()},
+            {"error": "No se pudo enviar el mensaje."},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
@@ -624,6 +632,10 @@ def send_group_message(request, group_id):
         return Response({'error': 'You are not a member of this group'}, status=status.HTTP_403_FORBIDDEN)
 
     content = request.data.get('content', '')
+
+    upload_error = validate_chat_uploads(request)
+    if upload_error:
+        return Response({'error': upload_error}, status=status.HTTP_400_BAD_REQUEST)
 
     image = request.FILES.get('image')
     video = request.FILES.get('video')
