@@ -82,12 +82,59 @@ class PushTokenViewTests(TestCase):
         )
         self.assertEqual(PushToken.objects.get(token=TOKEN_B).platform, "ios")
 
-    def test_only_one_active_token_per_user(self):
+    def test_delete_requires_authentication(self):
+        res = APIClient().delete(self.url, {"token": TOKEN_A}, format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_delete_without_token_is_400(self):
+        self.assertEqual(self.client.delete(self.url, {}, format="json").status_code, 400)
+
+    def test_delete_deactivates_only_that_device(self):
         self.client.post(self.url, {"token": TOKEN_A}, format="json")
         self.client.post(self.url, {"token": TOKEN_B}, format="json")
-        active = PushToken.objects.filter(user=self.user, is_active=True)
-        self.assertEqual([t.token for t in active], [TOKEN_B])
+        res = self.client.delete(self.url, {"token": TOKEN_A}, format="json")
+        self.assertEqual(res.status_code, 204)
         self.assertFalse(PushToken.objects.get(token=TOKEN_A).is_active)
+        self.assertTrue(PushToken.objects.get(token=TOKEN_B).is_active)
+
+    def test_delete_is_idempotent_and_ignores_unknown_tokens(self):
+        res = self.client.delete(self.url, {"token": TOKEN_A}, format="json")
+        self.assertEqual(res.status_code, 204)
+
+    def test_delete_cannot_deactivate_another_users_token(self):
+        PushToken.objects.create(user=self.other, token=TOKEN_B, is_active=True)
+        res = self.client.delete(self.url, {"token": TOKEN_B}, format="json")
+        self.assertEqual(res.status_code, 204)
+        self.assertTrue(PushToken.objects.get(token=TOKEN_B).is_active)
+
+    def test_multiple_devices_stay_active(self):
+        self.client.post(self.url, {"token": TOKEN_A}, format="json")
+        self.client.post(self.url, {"token": TOKEN_B}, format="json")
+        active = set(
+            PushToken.objects.filter(user=self.user, is_active=True).values_list(
+                "token", flat=True
+            )
+        )
+        self.assertEqual(active, {TOKEN_A, TOKEN_B})
+
+    def test_active_tokens_are_capped_dropping_oldest(self):
+        from api.push_views import MAX_ACTIVE_TOKENS_PER_USER
+
+        tokens = [
+            f"ExponentPushToken[device{i:02d}xxxxxxxxxxxxxx]"
+            for i in range(MAX_ACTIVE_TOKENS_PER_USER + 1)
+        ]
+        for token in tokens:
+            self.client.post(self.url, {"token": token}, format="json")
+        active = PushToken.objects.filter(user=self.user, is_active=True)
+        self.assertEqual(active.count(), MAX_ACTIVE_TOKENS_PER_USER)
+        self.assertFalse(PushToken.objects.get(token=tokens[0]).is_active)
+        self.assertTrue(PushToken.objects.get(token=tokens[-1]).is_active)
+
+    def test_other_users_tokens_untouched_by_cap(self):
+        PushToken.objects.create(user=self.other, token=TOKEN_B, is_active=True)
+        self.client.post(self.url, {"token": TOKEN_A}, format="json")
+        self.assertTrue(PushToken.objects.get(token=TOKEN_B).is_active)
 
     def test_token_is_reassigned_between_users(self):
         self.client.post(self.url, {"token": TOKEN_A}, format="json")
@@ -290,3 +337,62 @@ class PushSignalTests(TestCase):
                 self._notify(text="x")
         send.assert_not_called()
         post.assert_not_called()
+
+
+class DeadTokenCleanupTests(TestCase):
+    """Fase 29: tokens con DeviceNotRegistered se desactivan automáticamente."""
+
+    POST = "api.utils.push_notifications.requests.post"
+
+    def setUp(self):
+        self.user = make_user("erin")
+        self.alive = PushToken.objects.create(user=self.user, token=TOKEN_A)
+        self.dead = PushToken.objects.create(
+            user=self.user, token=TOKEN_B, is_active=True
+        )
+
+    def _response(self, body):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = body
+        return response
+
+    def test_device_not_registered_deactivates_only_that_token(self):
+        body = {
+            "data": [
+                {"status": "ok", "id": "1"},
+                {
+                    "status": "error",
+                    "message": "not registered",
+                    "details": {"error": "DeviceNotRegistered"},
+                },
+            ]
+        }
+        with mock.patch(self.POST, return_value=self._response(body)):
+            self.assertTrue(send_expo_push([TOKEN_A, TOKEN_B], "t", "b"))
+        self.alive.refresh_from_db()
+        self.dead.refresh_from_db()
+        self.assertTrue(self.alive.is_active)
+        self.assertFalse(self.dead.is_active)
+
+    def test_other_errors_keep_token_active(self):
+        body = {
+            "data": [
+                {
+                    "status": "error",
+                    "details": {"error": "MessageRateExceeded"},
+                }
+            ]
+        }
+        with mock.patch(self.POST, return_value=self._response(body)):
+            self.assertTrue(send_expo_push([TOKEN_A], "t", "b"))
+        self.alive.refresh_from_db()
+        self.assertTrue(self.alive.is_active)
+
+    def test_malformed_response_does_not_fail_delivery(self):
+        response = self._response(None)
+        response.json.side_effect = ValueError("no es JSON")
+        with mock.patch(self.POST, return_value=response):
+            self.assertTrue(send_expo_push([TOKEN_A], "t", "b"))
+        self.alive.refresh_from_db()
+        self.assertTrue(self.alive.is_active)

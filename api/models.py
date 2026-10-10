@@ -601,8 +601,8 @@ class SubFuentesCommentPost(models.Model):
 class PushToken(models.Model):
     """
     Almacena los ExponentPushToken de los dispositivos de cada usuario.
-    Un usuario puede tener múltiples tokens (varios dispositivos),
-    pero solo el más reciente queda is_active=True.
+    Un usuario puede tener múltiples tokens activos (varios dispositivos),
+    hasta el límite definido en push_views.MAX_ACTIVE_TOKENS_PER_USER.
     """
 
     user = models.ForeignKey(

@@ -61,7 +61,15 @@ CSRF_TRUSTED_ORIGINS = (
 )
 
 # CORS settings
-CORS_ORIGIN_ALLOW_ALL = True
+# Producción: solo orígenes explícitos (la app móvil nativa no usa CORS; solo
+# lo necesita un cliente web). Si DJANGO_CORS_ALLOWED_ORIGINS no está definida
+# se reutilizan los orígenes de CSRF_TRUSTED_ORIGINS. En DEBUG se abre más abajo.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("DJANGO_CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+] or list(CSRF_TRUSTED_ORIGINS)
+CORS_ALLOW_ALL_ORIGINS = False
 
 # Application definition
 INSTALLED_APPS = [
@@ -312,6 +320,8 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000          # 1 año
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 if DEBUG:
     import socket
@@ -404,3 +414,23 @@ if DEBUG:
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ── Celery Configuration ──────────────────────────────────────────────────────
+# Redis DB 2 para el broker de tareas (separado de la caché en DB 1)
+_CELERY_DEFAULT_BROKER = "redis://redis:6379/2"
+if _REDIS_URL:
+    _CELERY_DEFAULT_BROKER = _REDIS_URL.rsplit("/", 1)[0] + "/2"
+
+CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", _CELERY_DEFAULT_BROKER)
+CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 5 * 60  # 5 minutos máximo por tarea
+
+# En tests automatizados ejecutamos las tareas de forma síncrona
+if "test" in sys.argv:
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True

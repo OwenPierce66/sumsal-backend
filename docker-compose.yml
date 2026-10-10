@@ -32,6 +32,7 @@ services:
       context: .
       args:
         - DEV=true
+    image: aportaciones-backend-django:latest
     container_name: django-docker
     command: python manage.py runserver 0.0.0.0:8000 --noreload
     mem_limit: 256m
@@ -44,12 +45,30 @@ services:
       - .:/app      # Hot-reload: Maps your code into the container. AI did it
       - ./static:/app/staticfiles
     environment:
-      - PYTHONUNBUFFERED=1  # 1. These 5 lines where added by ai for the rich dev dependency to work with docker: Forces output to stream to console in real-time
-      - FORCE_COLOR=1       # 2. Tells Rich (and other tools) to use ANSI colors
-      - TERM=xterm-256color # 3. Mimics a high-color terminal inside the container
+      - PYTHONUNBUFFERED=1
+      - FORCE_COLOR=1
+      - TERM=xterm-256color
       - DATABASE_URL=postgres://dbuser:dbpassword@db:5432/dockerdjango
       - PYTHONDONTWRITEBYTECODE=1
       - REDIS_URL=redis://redis:6379/1
+    env_file: .env
+  celery-worker:
+    image: aportaciones-backend-django:latest
+    container_name: celery-worker
+    command: celery -A Sumsal_Backend worker -l INFO --concurrency=2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgres://dbuser:dbpassword@db:5432/dockerdjango
+      - PYTHONDONTWRITEBYTECODE=1
+      - REDIS_URL=redis://redis:6379/1
+      - CELERY_BROKER_URL=redis://redis:6379/2
     env_file: .env
 
   frontend-proxy:
