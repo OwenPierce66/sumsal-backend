@@ -37,10 +37,16 @@ urlpatterns += i18n_patterns(
     prefix_default_language=False,
 )
 
+from django.urls import re_path
+from django.views.static import serve
+
 if settings.DEBUG:
     urlpatterns += [
         path("__debug__/", include("debug_toolbar.urls")),
         path("__reload__/", include("django_browser_reload.urls")),
     ]
-# <--- ESTA ES LA LÍNEA MÁGICA QUE LE MANDA LAS IMÁGENES AL CELULAR
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Servir archivos multimedia (imágenes, audios, videos) en desarrollo y producción
+urlpatterns += [
+    re_path(r"^media/(?P<path>.*)$", serve, {"document_root": settings.MEDIA_ROOT}),
+]
