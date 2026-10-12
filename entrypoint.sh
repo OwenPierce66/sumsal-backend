@@ -26,6 +26,8 @@ if [ "$DEBUG" = "True" ] || [ "$DEBUG" = "1" ]; then
   echo "--- Iniciando en modo desarrollo en puerto $TARGET_PORT ---"
   exec python manage.py runserver 0.0.0.0:$TARGET_PORT
 else
-  echo "--- Iniciando Gunicorn en puerto $TARGET_PORT ---"
-  exec gunicorn Sumsal_Backend.wsgi:application --bind 0.0.0.0:$TARGET_PORT --workers 2 --timeout 120
+  echo "--- Iniciando Gunicorn en puerto $TARGET_PORT con access log ---"
+  exec gunicorn Sumsal_Backend.wsgi:application --bind 0.0.0.0:$TARGET_PORT --workers 2 --timeout 120 \
+    --access-logfile - \
+    --access-logformat '%(t)s "%(m)s %(U)s" %(s)s %(b)s %(D)s'
 fi
