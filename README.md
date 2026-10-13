@@ -61,12 +61,14 @@ Los archivos de usuario (imágenes y videos) se guardan en Supabase Storage cuan
 credenciales S3 del proyecto. En Render, añade estas variables al servicio backend:
 
 - `USE_SUPABASE_STORAGE=true`
-- `SUPABASE_STORAGE_S3_ENDPOINT=https://<project-ref>.supabase.co/storage/v1/s3`
+- `SUPABASE_STORAGE_S3_ENDPOINT=https://<project-ref>.storage.supabase.co/storage/v1/s3`
 - `SUPABASE_STORAGE_BUCKET=<nombre-del-bucket>`
 - `SUPABASE_STORAGE_ACCESS_KEY_ID=<clave-S3-de-Supabase>`
 - `SUPABASE_STORAGE_SECRET_ACCESS_KEY=<secreto-S3-de-Supabase>`
-- `SUPABASE_STORAGE_PUBLIC_URL=https://<project-ref>.supabase.co/storage/v1/object/public/<nombre-del-bucket>`
 - `SUPABASE_STORAGE_REGION=us-east-1` (opcional; usa `us-east-1` por defecto)
+
+La URL pública del bucket se deriva automáticamente del endpoint S3 y del nombre
+del bucket; no agregues una variable `SUPABASE_STORAGE_PUBLIC_URL`.
 
 Configura las claves directamente en el panel de Render; no las guardes en el
 repositorio ni las compartas en mensajes. Reinicia o despliega el servicio después

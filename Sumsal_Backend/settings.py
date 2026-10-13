@@ -265,9 +265,6 @@ if USE_SUPABASE_STORAGE:
         "SUPABASE_STORAGE_SECRET_ACCESS_KEY": os.getenv(
             "SUPABASE_STORAGE_SECRET_ACCESS_KEY", ""
         ).strip(),
-        "SUPABASE_STORAGE_PUBLIC_URL": os.getenv(
-            "SUPABASE_STORAGE_PUBLIC_URL", ""
-        ).strip().rstrip("/"),
     }
     _missing_supabase_storage_settings = [
         name for name, value in _supabase_storage_settings.items() if not value
@@ -277,16 +274,18 @@ if USE_SUPABASE_STORAGE:
             "Supabase Storage is enabled, but these settings are missing: "
             + ", ".join(_missing_supabase_storage_settings)
         )
-    if not _supabase_storage_settings[
+    _supabase_s3_endpoint = _supabase_storage_settings[
         "SUPABASE_STORAGE_S3_ENDPOINT"
-    ].startswith("https://"):
+    ].rstrip("/")
+    if not _supabase_s3_endpoint.startswith("https://"):
         raise ImproperlyConfigured("SUPABASE_STORAGE_S3_ENDPOINT must use HTTPS.")
-    if not _supabase_storage_settings[
-        "SUPABASE_STORAGE_PUBLIC_URL"
-    ].startswith("https://"):
-        raise ImproperlyConfigured("SUPABASE_STORAGE_PUBLIC_URL must use HTTPS.")
+    s3_path = "/storage/v1/s3"
+    if not _supabase_s3_endpoint.endswith(s3_path):
+        raise ImproperlyConfigured(
+            "SUPABASE_STORAGE_S3_ENDPOINT must end with /storage/v1/s3."
+        )
 
-    AWS_S3_ENDPOINT_URL = _supabase_storage_settings["SUPABASE_STORAGE_S3_ENDPOINT"]
+    AWS_S3_ENDPOINT_URL = _supabase_s3_endpoint
     AWS_STORAGE_BUCKET_NAME = _supabase_storage_settings["SUPABASE_STORAGE_BUCKET"]
     AWS_ACCESS_KEY_ID = _supabase_storage_settings["SUPABASE_STORAGE_ACCESS_KEY_ID"]
     AWS_SECRET_ACCESS_KEY = _supabase_storage_settings[
@@ -297,9 +296,10 @@ if USE_SUPABASE_STORAGE:
     AWS_QUERYSTRING_AUTH = False
     AWS_DEFAULT_ACL = None
     AWS_S3_FILE_OVERWRITE = False
-    SUPABASE_STORAGE_PUBLIC_URL = _supabase_storage_settings[
-        "SUPABASE_STORAGE_PUBLIC_URL"
-    ]
+    SUPABASE_STORAGE_PUBLIC_URL = (
+        f"{_supabase_s3_endpoint[:-len(s3_path)]}"
+        f"/storage/v1/object/public/{AWS_STORAGE_BUCKET_NAME}"
+    )
     STORAGES = {
         "default": {
             "BACKEND": "Sumsal_Backend.storage_backends.SupabaseStorage",
