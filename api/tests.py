@@ -2,6 +2,7 @@ import base64
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 from datetime import timedelta
@@ -12,8 +13,31 @@ from rest_framework.test import APIClient
 from api import models as ms
 from api.views import SharedTaskListCreateView
 from api.serializers import SimpleUserSerializer, SharedTaskSerializer, TaskSerializer
+from Sumsal_Backend.storage_backends import SupabaseStorage
 
 User = get_user_model()
+
+
+class SupabaseStorageTests(TestCase):
+    @override_settings(
+        SUPABASE_STORAGE_PUBLIC_URL=(
+            "https://project-ref.supabase.co/storage/v1/object/public/media"
+        ),
+        AWS_STORAGE_BUCKET_NAME="media",
+        AWS_S3_ENDPOINT_URL="https://project-ref.supabase.co/storage/v1/s3",
+        AWS_S3_REGION_NAME="us-east-1",
+        AWS_ACCESS_KEY_ID="test-access-key",
+        AWS_SECRET_ACCESS_KEY="test-secret-key",
+        AWS_QUERYSTRING_AUTH=False,
+    )
+    def test_media_urls_use_public_supabase_bucket_url(self):
+        storage = SupabaseStorage()
+
+        self.assertEqual(
+            storage.url("tasks/example photo.jpg"),
+            "https://project-ref.supabase.co/storage/v1/object/public/media/"
+            "tasks/example%20photo.jpg",
+        )
 
 
 class UserMeViewRegressionTests(TestCase):

@@ -251,6 +251,64 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+USE_SUPABASE_STORAGE = os.getenv("USE_SUPABASE_STORAGE", "").strip().lower() in {
+    "1", "true", "yes",
+}
+
+if USE_SUPABASE_STORAGE:
+    _supabase_storage_settings = {
+        "SUPABASE_STORAGE_S3_ENDPOINT": os.getenv("SUPABASE_STORAGE_S3_ENDPOINT", "").strip(),
+        "SUPABASE_STORAGE_BUCKET": os.getenv("SUPABASE_STORAGE_BUCKET", "").strip(),
+        "SUPABASE_STORAGE_ACCESS_KEY_ID": os.getenv(
+            "SUPABASE_STORAGE_ACCESS_KEY_ID", ""
+        ).strip(),
+        "SUPABASE_STORAGE_SECRET_ACCESS_KEY": os.getenv(
+            "SUPABASE_STORAGE_SECRET_ACCESS_KEY", ""
+        ).strip(),
+        "SUPABASE_STORAGE_PUBLIC_URL": os.getenv(
+            "SUPABASE_STORAGE_PUBLIC_URL", ""
+        ).strip().rstrip("/"),
+    }
+    _missing_supabase_storage_settings = [
+        name for name, value in _supabase_storage_settings.items() if not value
+    ]
+    if _missing_supabase_storage_settings:
+        raise ImproperlyConfigured(
+            "Supabase Storage is enabled, but these settings are missing: "
+            + ", ".join(_missing_supabase_storage_settings)
+        )
+    if not _supabase_storage_settings[
+        "SUPABASE_STORAGE_S3_ENDPOINT"
+    ].startswith("https://"):
+        raise ImproperlyConfigured("SUPABASE_STORAGE_S3_ENDPOINT must use HTTPS.")
+    if not _supabase_storage_settings[
+        "SUPABASE_STORAGE_PUBLIC_URL"
+    ].startswith("https://"):
+        raise ImproperlyConfigured("SUPABASE_STORAGE_PUBLIC_URL must use HTTPS.")
+
+    AWS_S3_ENDPOINT_URL = _supabase_storage_settings["SUPABASE_STORAGE_S3_ENDPOINT"]
+    AWS_STORAGE_BUCKET_NAME = _supabase_storage_settings["SUPABASE_STORAGE_BUCKET"]
+    AWS_ACCESS_KEY_ID = _supabase_storage_settings["SUPABASE_STORAGE_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = _supabase_storage_settings[
+        "SUPABASE_STORAGE_SECRET_ACCESS_KEY"
+    ]
+    AWS_S3_REGION_NAME = os.getenv("SUPABASE_STORAGE_REGION", "us-east-1").strip()
+    AWS_S3_ADDRESSING_STYLE = "path"
+    AWS_QUERYSTRING_AUTH = False
+    AWS_DEFAULT_ACL = None
+    AWS_S3_FILE_OVERWRITE = False
+    SUPABASE_STORAGE_PUBLIC_URL = _supabase_storage_settings[
+        "SUPABASE_STORAGE_PUBLIC_URL"
+    ]
+    STORAGES = {
+        "default": {
+            "BACKEND": "Sumsal_Backend.storage_backends.SupabaseStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
 
 # ============================================================================
 # CACHÉ — Redis (producción y desarrollo con Docker)

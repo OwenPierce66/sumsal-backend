@@ -1,4 +1,21 @@
+from urllib.parse import quote
+
 from django.conf import settings
+
+from storages.backends.s3boto3 import S3Boto3Storage
+from storages.utils import clean_name
+
+
+class SupabaseStorage(S3Boto3Storage):
+    default_acl = None
+    file_overwrite = False
+    querystring_auth = False
+
+    def url(self, name, parameters=None, expire=None, http_method=None):
+        base_url = settings.SUPABASE_STORAGE_PUBLIC_URL.rstrip("/")
+        normalized_name = self._normalize_name(clean_name(name))
+        return f"{base_url}/{quote(normalized_name, safe='/')}"
+
 
 if getattr(settings, 'USE_S3', False):
     from storages.backends.s3boto3 import S3Boto3Storage
