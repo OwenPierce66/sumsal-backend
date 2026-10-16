@@ -9,6 +9,7 @@ User = get_user_model()
 
 # Slug de la etiqueta de aprobación (espejo de ms.APPROVED_TAG).
 APPROVED_TAG = "aprobada"
+APPROVED_TAG_ALIASES = {"aprobada", "aprobadas", "aprovada", "aprovadas"}
 
 
 def file_to_abs_url(file_or_str, request=None):
@@ -488,32 +489,47 @@ class TaskSerializer(serializers.ModelSerializer):
         return invitation.status if invitation else None
 
     def validate(self, attrs):
-        """La etiqueta reservada 'aprobada' solo la puede poner o quitar el staff."""
-        if "categories" in attrs:
-            request = self.context.get("request")
-            user = getattr(request, "user", None)
-            is_admin = bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+        """Los estados de moderación solo cambian mediante el endpoint de aprobación."""
+        instance = getattr(self, "instance", None)
+        if "categories" in attrs or "pch" in attrs:
+            def moderation_statuses(value):
+                statuses = set()
+                for category in str(value or "").split(","):
+                    normalized = category.strip().casefold()
+                    if normalized in APPROVED_TAG_ALIASES:
+                        statuses.add(APPROVED_TAG)
+                    elif normalized == "procesando":
+                        statuses.add("procesando")
+                return statuses
 
-            def normalize(cat_list):
-                return [str(c).strip().lower() for c in cat_list if str(c).strip()]
+            categories_value = attrs.get(
+                "categories",
+                getattr(instance, "categories", ""),
+            )
+            new_statuses = moderation_statuses(categories_value)
+            old_statuses = moderation_statuses(instance.categories) if instance else set()
 
-            new_cats = normalize(str(attrs.get("categories") or "").split(","))
-            instance = getattr(self, "instance", None)
-            old_cats = normalize(str(getattr(instance, "categories", "") or "").split(",")) if instance else []
-
-            adds_approved = APPROVED_TAG in new_cats and APPROVED_TAG not in old_cats
-            removes_approved = APPROVED_TAG in old_cats and APPROVED_TAG not in new_cats
-
-            if (adds_approved or removes_approved) and not is_admin:
+            if instance and new_statuses != old_statuses:
                 raise serializers.ValidationError({
-                    "categories": "La etiqueta 'aprobada' solo puede modificarla un administrador."
+                    "categories": "Los estados de moderación solo se pueden cambiar con la acción de aprobación."
+                })
+            if not instance and new_statuses:
+                raise serializers.ValidationError({
+                    "categories": "El estado inicial de moderación se asigna automáticamente."
                 })
 
-            is_podcast = "grabar podcast" in new_cats
-            has_approved = APPROVED_TAG in new_cats
-            if is_podcast and not has_approved and "procesando" not in new_cats:
-                categories_value = str(attrs.get("categories") or "")
-                categories_value = f"{categories_value}, Procesando".strip(", ")
+            new_categories = {
+                str(category).strip().casefold()
+                for category in str(categories_value or "").split(",")
+                if str(category).strip()
+            }
+            is_podcast = "grabar podcast" in new_categories
+            if (
+                is_podcast
+                and APPROVED_TAG not in new_statuses
+                and "procesando" not in new_statuses
+            ):
+                categories_value = f"{categories_value or ''}, Procesando".strip(", ")
                 attrs["categories"] = categories_value
         return attrs
 
@@ -633,7 +649,7 @@ class TaskSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return related_has_user(obj, "likes", request.user)
         return False
-    
+
     def get_comments_count(self, obj):
         """Devuelve el total de comentarios anidados"""
         try:

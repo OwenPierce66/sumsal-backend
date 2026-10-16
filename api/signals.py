@@ -1,9 +1,14 @@
 import logging
+import re
+from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Count, Q
+from django.db.models.functions import Lower
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 from massaging.models import GroupMessage, GroupMembership, Message, MessageLike
 
@@ -133,6 +138,80 @@ def _retire(instance, origin=None):
     retire_notification(dedupe_key=f"{instance._meta.label_lower}:{instance.pk}")
 
 
+def _notify_comment_mentions(comment):
+    usernames = {
+        match.rstrip(".,;:!?)]}").casefold()
+        for match in re.findall(r"(?<![\w@])@([\w.-]{1,150})", comment.text or "")
+    }
+    if not usernames:
+        return
+
+    users = list(
+        User.objects.annotate(normalized_username=Lower("username"))
+        .filter(normalized_username__in=usernames)
+        .exclude(pk=comment.created_by_id)
+    )
+
+    excerpt = _excerpt(comment.text)
+    for mentioned_user in users:
+        create_notification(
+            recipient=mentioned_user,
+            actor=comment.created_by,
+            notification_type="task_mention",
+            target_type="task",
+            target_id=comment.post_id,
+            secondary_target_type="comment",
+            secondary_target_id=comment.pk,
+            data={
+                "text": f"{_actor_name(comment.created_by)} te mencionó en un comentario.",
+                "title": comment.post.title,
+                "excerpt": excerpt,
+            },
+            dedupe_key=f"task-mention:{comment.pk}:{mentioned_user.pk}",
+        )
+
+
+def _notify_monthly_petition_top_five():
+    now = timezone.now()
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    leaders = list(
+        Like.objects.filter(
+            task__pch__iexact="peticiones",
+            created_at__gte=month_start,
+            created_at__lt=next_month,
+        )
+        .values("task_id")
+        .annotate(likes_count=Count("id"))
+        .order_by("-likes_count", "task_id")[:5]
+    )
+    if not leaders:
+        return
+
+    tasks_by_id = Task.objects.in_bulk([leader["task_id"] for leader in leaders])
+    admins = list(User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)))
+    month_key = month_start.strftime("%Y-%m")
+    for leader in leaders:
+        task = tasks_by_id.get(leader["task_id"])
+        if not task:
+            continue
+        for admin in admins:
+            create_notification(
+                recipient=admin,
+                actor=None,
+                notification_type="petition_top_month",
+                target_type="task",
+                target_id=task.pk,
+                data={
+                    "text": f"Una petición entró al top 5 de aportaciones con más likes de {month_key}.",
+                    "title": task.title[:80],
+                    "likes_count": leader["likes_count"],
+                    "month": month_key,
+                },
+                dedupe_key=f"petition-top-month:{month_key}:{task.pk}",
+            )
+
+
 @receiver(post_save, sender=TaskTag)
 def notify_task_tag(sender, instance, created, **kwargs):
     """Notifica a la persona etiquetada en una publicación.
@@ -173,34 +252,40 @@ def retire_task_tag_notification(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Like)
 def notify_task_like(sender, instance, created, **kwargs):
-    if not created or not instance.task.user:
+    if not created:
         return
-    is_story = instance.task.pch == "historias"
-    noun = "historia" if is_story else "tarea"
-    _notify(
-        instance,
-        recipient=instance.task.user,
-        actor=instance.user,
-        notification_type="story_like" if is_story else "task_like",
-        target_type="story" if is_story else "task",
-        target_id=instance.task_id,
-        text=f"{_actor_name(instance.user)} indicó que le gusta tu {noun}.",
-        data={
-            "title": instance.task.title,
-            "excerpt": _excerpt(instance.task.description),
-        },
-    )
+    if instance.task.user:
+        is_story = instance.task.pch == "historias"
+        noun = "historia" if is_story else "tarea"
+        _notify(
+            instance,
+            recipient=instance.task.user,
+            actor=instance.user,
+            notification_type="story_like" if is_story else "task_like",
+            target_type="story" if is_story else "task",
+            target_id=instance.task_id,
+            text=f"{_actor_name(instance.user)} indicó que le gusta tu {noun}.",
+            data={
+                "title": instance.task.title,
+                "excerpt": _excerpt(instance.task.description),
+            },
+        )
+    if (instance.task.pch or "").casefold() == "peticiones":
+        _notify_monthly_petition_top_five()
 
 
 @receiver(post_delete, sender=Like)
 def retire_task_like(sender, instance, **kwargs):
     _retire(instance, kwargs.get("origin"))
+    if (instance.task.pch or "").casefold() == "peticiones":
+        _notify_monthly_petition_top_five()
 
 
 @receiver(post_save, sender=NewPeticionCommentPost)
 def notify_task_comment(sender, instance, created, **kwargs):
     if not created:
         return
+    _notify_comment_mentions(instance)
     recipient = instance.parent.created_by if instance.parent else instance.post.user
     if not recipient:
         return

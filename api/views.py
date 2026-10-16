@@ -18,6 +18,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated, IsAuthenticate
 from rest_framework.pagination import PageNumberPagination, LimitOffsetPagination
 from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
+from uuid import UUID
 import re
 import json
 import unicodedata
@@ -970,16 +971,13 @@ def repost_task(request, task_id):
         # Usamos select_for_update para bloquear la fila y evitar race conditions
         task = ms.Task.objects.select_for_update().get(id=task_id)
 
-        # Usamos el modelo 'Like' como si fuera 'Repost' para registrar la acción.
         repost_instance, created = ms.Like.objects.get_or_create(user=request.user, task=task)
 
         if not created:
-            # El usuario ya había reposteado, así que revertimos la acción.
             repost_instance.delete()
             task.interaction_score = F('interaction_score') - 1
             reposted = False
         else:
-            # Es la primera vez que repostea, aumentamos la popularidad.
             task.interaction_score = F('interaction_score') + 1
             reposted = True
             retire_notification(dedupe_key=f"api.like:{repost_instance.pk}")
@@ -1250,22 +1248,16 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             defaults={"description": request.data.get("description", "")},
         )
 
-        # ✅ FIX LÓGICA DE CONTADORES:
-        # 1. El share_count SIEMPRE se incrementa.
-        # 2. El interaction_score solo se incrementa si el usuario NUNCA ha interactuado
-        #    (ni con un 'share' ni con un 'repost', que se registran en el modelo Like).
         has_interacted_before = ms.Like.objects.filter(user=request.user, task=task).exists()
 
         update_fields = {'share_count': F('share_count') + 1}
         if not has_interacted_before:
             update_fields['interaction_score'] = F('interaction_score') + 1
-            # Registramos la interacción en el modelo Like para que no vuelva a contar.
             interaction, interaction_created = ms.Like.objects.get_or_create(
                 user=request.user,
                 task=task,
             )
             if interaction_created:
-                # Like también se usa aquí como marcador interno, no como un like real.
                 retire_notification(dedupe_key=f"api.like:{interaction.pk}")
         
         ms.Task.objects.filter(pk=task.pk).update(**update_fields)
@@ -1961,10 +1953,11 @@ def admin_app_like_profile(request, profile_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def sync_task_tags(request, task_id):
     """Sincroniza las personas etiquetadas en una tarea. Solo el autor (o staff)."""
     task = get_object_or_404(ms.Task, id=task_id)
-    if task.user_id != request.user.id and not request.user.is_staff:
+    if task.user_id != request.user.id and not (request.user.is_staff or request.user.is_superuser):
         return Response({"detail": "Solo el autor puede editar las etiquetas."}, status=403)
 
     user_ids = request.data.get("user_ids", [])
@@ -1972,8 +1965,17 @@ def sync_task_tags(request, task_id):
         return Response({"detail": "user_ids debe ser una lista."}, status=400)
 
     # El autor no tiene sentido etiquetándose a sí mismo
-    desired_ids = {str(uid) for uid in user_ids if str(uid) != str(request.user.id)}
+    try:
+        desired_ids = {
+            str(UUID(str(uid)))
+            for uid in user_ids
+            if str(uid) != str(request.user.id)
+        }
+    except (TypeError, ValueError, AttributeError):
+        return Response({"detail": "Cada user_id debe ser un UUID válido."}, status=400)
     users_map = {str(u.id): u for u in User.objects.filter(id__in=desired_ids)}
+    if desired_ids - set(users_map):
+        return Response({"detail": "Uno o más usuarios no existen."}, status=400)
 
     existing_tags = {str(tag.user_id): tag for tag in task.tagged_users.all()}
 
@@ -2004,38 +2006,56 @@ def sync_task_tags(request, task_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def toggle_task_approval(request, task_id):
-    """Solo staff: aprueba una propuesta de podcast y notifica a sus involucrados."""
+    """Solo administradores pueden aprobar o retirar la aprobación de aportaciones."""
     if not (request.user.is_staff or request.user.is_superuser):
         return Response({"detail": "Solo administradores."}, status=403)
 
     task = get_object_or_404(ms.Task, id=task_id)
-    approve = bool(request.data.get("approve", True))
-
-    cats = [c.strip() for c in (task.categories or "").split(",") if c.strip()]
-    is_podcast = any(ms.PODCAST_CATEGORY.casefold() == category.casefold() for category in cats)
-    if not is_podcast:
+    approve_value = request.data.get("approve", True)
+    if isinstance(approve_value, bool):
+        approve = approve_value
+    elif isinstance(approve_value, str) and approve_value.strip().casefold() in {"true", "false"}:
+        approve = approve_value.strip().casefold() == "true"
+    elif isinstance(approve_value, int) and approve_value in (0, 1):
+        approve = bool(approve_value)
+    else:
         return Response(
-            {"detail": "Solo se pueden aprobar tareas con la categoría Grabar Podcast."},
+            {"approve": "Debe ser un valor booleano."},
             status=400,
         )
-    has_tag = ms.APPROVED_TAG in [c.lower() for c in cats]
+
+    cats = [c.strip() for c in (task.categories or "").split(",") if c.strip()]
+    category_keys = {category.casefold() for category in cats}
+    is_podcast = ms.PODCAST_CATEGORY.casefold() in category_keys
+    is_petition = (task.pch or "").strip().casefold() in {"peticion", "peticiones"}
+    if not (is_podcast or is_petition):
+        return Response(
+            {"detail": "Solo se pueden aprobar peticiones o propuestas de podcast."},
+            status=400,
+        )
+    approval_aliases = {"aprobada", "aprobadas", "aprovada", "aprovadas"}
+    has_tag = bool(category_keys & approval_aliases)
 
     if approve and not has_tag:
-        cats = [c for c in cats if c.casefold() != "procesando"]
+        cats = [
+            c for c in cats
+            if c.casefold() != "procesando" and c.casefold() not in approval_aliases
+        ]
         cats.append(ms.APPROVED_TAG)
     elif not approve and has_tag:
-        cats = [c for c in cats if c.lower() != ms.APPROVED_TAG]
+        cats = [c for c in cats if c.casefold() not in approval_aliases]
         if not any(c.casefold() == "procesando" for c in cats):
             cats.append("Procesando")
 
-    task.categories = ", ".join(cats)
-    task.save(update_fields=["categories"])
+    if (approve and not has_tag) or (not approve and has_tag):
+        task.categories = ", ".join(cats)
+        task.save(update_fields=["categories"])
 
-    is_podcast = ms.PODCAST_CATEGORY.lower() in (task.categories or "").lower()
-    kind = "podcast" if is_podcast else "tarea"
+    kind = "podcast" if is_podcast else "petition"
 
-    if approve:
+    if approve and not has_tag:
         actor_name = request.user.username or request.user.email
         recipients = [task.user] + [
             tag.user for tag in task.tagged_users.select_related("user").all()
@@ -2060,27 +2080,29 @@ def toggle_task_approval(request, task_id):
                 data={"text": text, "task_title": task.title[:80]},
                 dedupe_key=f"approved:{kind}:{task.id}",
             )
-        for tag in task.tagged_users.select_related("user").all():
-            invitation, _ = ms.PodcastInvitation.objects.get_or_create(
-                task=task,
-                user=tag.user,
-                defaults={"status": ms.PodcastInvitation.STATUS_PENDING},
-            )
-            if invitation.status == ms.PodcastInvitation.STATUS_PENDING:
-                Message.objects.filter(
-                    sender=request.user,
-                    receiver=tag.user,
-                    content__startswith=f"🎙️ Invitación a podcast aprobada | tarea:{task.id}",
-                ).first() or Message.objects.create(
-                    sender=request.user,
-                    receiver=tag.user,
-                    content=(
-                        f"↪ Publicación compartida: {task.title} [task:{task.id}]\n"
-                        "🎙️ Invitación a podcast aprobada.\n"
-                        "Fuiste invitado a participar. Abre la tarea para aceptar o rechazar la invitación."
-                    ),
+        if is_podcast:
+            for tag in task.tagged_users.select_related("user").all():
+                invitation, _ = ms.PodcastInvitation.objects.get_or_create(
+                    task=task,
+                    user=tag.user,
+                    defaults={"status": ms.PodcastInvitation.STATUS_PENDING},
                 )
-    else:
+                if invitation.status == ms.PodcastInvitation.STATUS_PENDING:
+                    Message.objects.filter(
+                        sender=request.user,
+                        receiver=tag.user,
+                        content__startswith=f"🎙️ Invitación a podcast aprobada | tarea:{task.id}",
+                    ).first() or Message.objects.create(
+                        sender=request.user,
+                        receiver=tag.user,
+                        content=(
+                            f"🎙️ Invitación a podcast aprobada | tarea:{task.id}\n"
+                            f"↪ Publicación compartida: {task.title} [task:{task.id}]\n"
+                            "🎙️ Invitación a podcast aprobada.\n"
+                            "Fuiste invitado a participar. Abre la tarea para aceptar o rechazar la invitación."
+                        ),
+                    )
+    elif not approve and has_tag:
         # Al quitar la aprobación, retiramos la felicitación
         retire_notification(dedupe_key=f"approved:{kind}:{task.id}")
 
@@ -2093,8 +2115,22 @@ def toggle_task_approval(request, task_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@transaction.atomic
 def respond_podcast_invitation(request, task_id):
     task = get_object_or_404(ms.Task, id=task_id)
+    task_categories = {
+        category.strip().casefold()
+        for category in (task.categories or "").split(",")
+        if category.strip()
+    }
+    if (
+        ms.PODCAST_CATEGORY.casefold() not in task_categories
+        or not task_categories.intersection({"aprobada", "aprobadas", "aprovada", "aprovadas"})
+    ):
+        return Response(
+            {"detail": "La invitación solo está activa para podcasts aprobados."},
+            status=400,
+        )
     invitation = get_object_or_404(
         ms.PodcastInvitation,
         task=task,
@@ -2103,7 +2139,15 @@ def respond_podcast_invitation(request, task_id):
     if invitation.status != ms.PodcastInvitation.STATUS_PENDING:
         return Response({"status": invitation.status, "detail": "La invitación ya fue respondida."}, status=400)
 
-    accepted = bool(request.data.get("accepted", True))
+    accepted_value = request.data.get("accepted", True)
+    if isinstance(accepted_value, bool):
+        accepted = accepted_value
+    elif isinstance(accepted_value, str) and accepted_value.strip().casefold() in {"true", "false"}:
+        accepted = accepted_value.strip().casefold() == "true"
+    elif isinstance(accepted_value, int) and accepted_value in (0, 1):
+        accepted = bool(accepted_value)
+    else:
+        return Response({"accepted": "Debe ser un valor booleano."}, status=400)
     invitation.status = (
         ms.PodcastInvitation.STATUS_ACCEPTED
         if accepted else ms.PodcastInvitation.STATUS_DECLINED
@@ -2114,9 +2158,14 @@ def respond_podcast_invitation(request, task_id):
     actor_name = request.user.username or request.user.email
     status_text = "aceptó" if accepted else "rechazó"
     admins = User.objects.filter(Q(is_staff=True) | Q(is_superuser=True)).exclude(id=request.user.id)
-    for admin in admins:
+    recipients = list(admins)
+    if task.user and task.user_id != request.user.id and task.user_id not in {
+        recipient.id for recipient in recipients
+    }:
+        recipients.append(task.user)
+    for recipient in recipients:
         create_notification(
-            recipient=admin,
+            recipient=recipient,
             actor=request.user,
             notification_type="podcast_invitation_response",
             target_type="task",
@@ -2152,7 +2201,11 @@ class PostListCreateView(generics.ListCreateAPIView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
-        return ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related(*POST_PREFETCH).order_by('-created_at')
+        qs = ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related(*POST_PREFETCH).order_by('-created_at')
+        user_id = self.request.query_params.get('user')
+        if user_id and str(user_id).isdigit():
+            qs = qs.filter(user_id=int(user_id))
+        return qs
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
