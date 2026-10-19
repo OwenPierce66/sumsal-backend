@@ -355,39 +355,26 @@ class UserMeView(APIView):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_social_stats(request, user_id):
+    """Contadores de perfiles favoritos (lo que antes era "seguir").
+
+    - favorited_by_count: cuántas personas tienen este perfil en favoritos.
+    - favorites_count: a cuántos perfiles tiene en favoritos; solo visible para el
+      dueño o si `favorite_profiles_public`; si no, es None.
+    - is_favorited: si quien consulta ya lo tiene en favoritos.
+    """
     target = get_object_or_404(User, id=user_id)
+    is_owner = request.user.id == target.id
+    profile = getattr(target, "profile", None)
+    favorites_visible = is_owner or bool(getattr(profile, "favorite_profiles_public", False))
     return Response({
-        "followers_count": ms.Follow.objects.filter(following=target).count(),
-        "following_count": ms.Follow.objects.filter(follower=target).count(),
-        "is_following": (
-            request.user.id != target.id
-            and ms.Follow.objects.filter(follower=request.user, following=target).exists()
+        "favorited_by_count": ms.pFavorito.objects.filter(perfil=target).count(),
+        "favorites_count": (
+            ms.pFavorito.objects.filter(user=target).count() if favorites_visible else None
         ),
-    })
-
-
-@api_view(["POST", "DELETE"])
-@permission_classes([IsAuthenticated])
-def toggle_user_follow(request, user_id):
-    target = get_object_or_404(User, id=user_id)
-    if request.user.id == target.id:
-        return Response(
-            {"detail": "No puedes seguir tu propia cuenta."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    relation = ms.Follow.objects.filter(follower=request.user, following=target)
-    if request.method == "POST":
-        ms.Follow.objects.get_or_create(follower=request.user, following=target)
-        is_following = True
-    else:
-        relation.delete()
-        is_following = False
-
-    return Response({
-        "followers_count": ms.Follow.objects.filter(following=target).count(),
-        "following_count": ms.Follow.objects.filter(follower=target).count(),
-        "is_following": is_following,
+        "is_favorited": (
+            not is_owner
+            and ms.pFavorito.objects.filter(user=request.user, perfil=target).exists()
+        ),
     })
 
 
