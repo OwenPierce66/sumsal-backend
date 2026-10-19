@@ -1267,6 +1267,13 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 
         if pch:
             qs = qs.filter(task__pch__iexact=pch)
+
+        task_id = self.request.query_params.get("task_id")
+        if task_id:
+            try:
+                qs = qs.filter(task_id=UUID(str(task_id)))
+            except (ValueError, AttributeError):
+                return qs.none()
         
         if date_filter == "hoy":
             qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=1))
