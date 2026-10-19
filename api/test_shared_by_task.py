@@ -46,6 +46,26 @@ class SharedTasksByTaskTests(TestCase):
             ms.SharedTask.objects.filter(task=self.task, shared_by=self.sharer).count(), 2
         )
 
+    def test_post_creates_independent_share_each_time(self):
+        self.client.force_authenticate(self.sharer)
+        descriptions = ["Primera", "Segunda", "Tercera"]
+        ids = []
+        for description in descriptions:
+            response = self.client.post(
+                self.url, {"task_id": str(self.task.id), "description": description}, format="json"
+            )
+            self.assertEqual(response.status_code, 201)
+            ids.append(str(response.data["id"]))
+
+        self.assertEqual(len(set(ids)), 3)
+        stored = ms.SharedTask.objects.filter(task=self.task, shared_by=self.sharer)
+        self.assertEqual(sorted(stored.values_list("description", flat=True)), sorted(descriptions))
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.share_count, 3)
+
+        self.client.force_authenticate(self.reader)
+        self.assertEqual(self._ids({"task_id": str(self.task.id)}), set(ids))
+
     def test_task_id_lists_every_share_of_that_task(self):
         a = ms.SharedTask.objects.create(task=self.task, shared_by=self.sharer, description="A")
         b = ms.SharedTask.objects.create(task=self.task, shared_by=self.sharer, description="B")

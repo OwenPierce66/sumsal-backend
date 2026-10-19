@@ -1332,10 +1332,12 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         # Bloqueamos la tarea para actualizarla de forma segura
         task = get_object_or_404(ms.Task.objects.select_for_update(), id=task_id)
 
-        shared, created = ms.SharedTask.objects.get_or_create(
+        # Cada compartida es independiente: un usuario puede compartir la misma tarea
+        # cuantas veces quiera, cada una con su propia descripción.
+        shared = ms.SharedTask.objects.create(
             task=task,
             shared_by=request.user,
-            defaults={"description": request.data.get("description", "")},
+            description=request.data.get("description", ""),
         )
 
         has_interacted_before = ms.Like.objects.filter(user=request.user, task=task).exists()
@@ -1355,16 +1357,8 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         # Recargamos la tarea desde la DB para obtener los contadores actualizados.
         task.refresh_from_db()
 
-        if created:
-            status_code = status.HTTP_201_CREATED
-        else:
-            # Si ya existía, solo actualizamos la descripción.
-            shared.description = request.data.get("description", shared.description)
-            shared.save(update_fields=['description'])
-            status_code = status.HTTP_200_OK
-
         serializer = self.get_serializer(shared)
-        return Response(serializer.data, status=status_code)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])
