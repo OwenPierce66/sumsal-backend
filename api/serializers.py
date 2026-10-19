@@ -321,6 +321,73 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         return False
 
 
+class AdminUserSerializer(serializers.ModelSerializer):
+    profile = ProfileSerializer(read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "is_active",
+            "is_staff",
+            "is_superuser",
+            "date_joined",
+            "profile",
+        ]
+
+
+class UserReportSerializer(serializers.ModelSerializer):
+    reporter = SimpleUserSerializer(read_only=True)
+    target_summary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ms.UserReport
+        fields = [
+            "id",
+            "reporter",
+            "target_type",
+            "target_id",
+            "target_summary",
+            "reason",
+            "status",
+            "reviewed_by",
+            "resolution_note",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_target_summary(self, report):
+        target_models = {
+            ms.UserReport.TARGET_USER: (User, "username"),
+            ms.UserReport.TARGET_TASK: (ms.Task, "title"),
+            ms.UserReport.TARGET_COMMENT: (ms.NewPeticionCommentPost, "text"),
+            ms.UserReport.TARGET_SHARED_COMMENT: (ms.SharedTaskComment, "text"),
+            ms.UserReport.TARGET_SHARED_TASK: (ms.SharedTask, "task__title"),
+            ms.UserReport.TARGET_FORUM_POST: (ms.Postt, "title"),
+        }
+        model_field = target_models.get(report.target_type)
+        if not model_field:
+            return None
+        model, preview_field = model_field
+        target = model.objects.filter(pk=report.target_id).first()
+        if not target:
+            return None
+        preview = target
+        for field in preview_field.split("__"):
+            preview = getattr(preview, field, None)
+            if preview is None:
+                break
+        return {
+            "id": report.target_id,
+            "preview": str(preview or "")[:240],
+        }
+
+
 # ============================================================================
 # SERIALIZERS PARA LIKES Y FAVORITOS
 # ============================================================================
@@ -432,8 +499,10 @@ class SubFuentesSerializer(serializers.ModelSerializer):
 class TaskSerializer(serializers.ModelSerializer):
     user = SimpleUserSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
+    period_likes_count = serializers.IntegerField(source="period_like_count", read_only=True)
     views_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
+    user_has_reposted = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     # ✅ FIX: Especificamos que el campo 'comments' debe leer de la relación 'post_comments' del modelo Task.
     comments = NewPeticionCommentSerializer(source='post_comments', many=True, read_only=True)
@@ -650,6 +719,12 @@ class TaskSerializer(serializers.ModelSerializer):
             return related_has_user(obj, "likes", request.user)
         return False
 
+    def get_user_has_reposted(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return related_has_user(obj, "reposts", request.user)
+        return False
+
     def get_comments_count(self, obj):
         """Devuelve el total de comentarios anidados"""
         try:
@@ -666,6 +741,7 @@ class SharedTaskSerializer(serializers.ModelSerializer):
     task = TaskSerializer(read_only=True)
     shared_by = SimpleUserSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
+    period_likes_count = serializers.IntegerField(source="period_like_count", read_only=True)
     user_has_liked = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
 
@@ -677,6 +753,7 @@ class SharedTaskSerializer(serializers.ModelSerializer):
             "shared_by",
             "description",
             "likes_count",
+            "period_likes_count",
             "user_has_liked",
             "comments_count",
             "created_at",

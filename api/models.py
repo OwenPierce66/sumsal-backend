@@ -120,6 +120,88 @@ class Profile(TimeStampedModel):
         return f"Profile for {self.user.email}"
 
 
+class Follow(TimeStampedModel):
+    follower = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="following_relationships",
+    )
+    following = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="follower_relationships",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["follower", "following"],
+                name="unique_user_follow",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(follower=models.F("following")),
+                name="prevent_self_follow",
+            ),
+        ]
+
+
+class UserReport(TimeStampedModel):
+    TARGET_USER = "user"
+    TARGET_TASK = "task"
+    TARGET_COMMENT = "comment"
+    TARGET_SHARED_COMMENT = "shared_comment"
+    TARGET_SHARED_TASK = "shared_task"
+    TARGET_FORUM_POST = "forum_post"
+    TARGET_CHOICES = [
+        (TARGET_USER, "User"),
+        (TARGET_TASK, "Task"),
+        (TARGET_COMMENT, "Task comment"),
+        (TARGET_SHARED_COMMENT, "Shared task comment"),
+        (TARGET_SHARED_TASK, "Shared task"),
+        (TARGET_FORUM_POST, "Forum post"),
+    ]
+    STATUS_PENDING = "pending"
+    STATUS_RESOLVED = "resolved"
+    STATUS_DISMISSED = "dismissed"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_RESOLVED, "Resolved"),
+        (STATUS_DISMISSED, "Dismissed"),
+    ]
+
+    reporter = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="submitted_reports",
+    )
+    target_type = models.CharField(max_length=24, choices=TARGET_CHOICES)
+    target_id = models.CharField(max_length=64)
+    reason = models.TextField(max_length=1000)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_reports",
+    )
+    resolution_note = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        ordering = ["status", "-created_at"]
+        indexes = [
+            models.Index(fields=["status", "-created_at"], name="report_status_date_idx"),
+            models.Index(fields=["target_type", "target_id"], name="report_target_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["reporter", "target_type", "target_id"],
+                condition=models.Q(status="pending"),
+                name="unique_pending_reporter_target",
+            ),
+        ]
+
+
 class Notification(TimeStampedModel):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     recipient = models.ForeignKey(
@@ -291,6 +373,23 @@ class Like(TimeStampedModel):
 
     class Meta:
         unique_together = ("user", "task")
+
+
+class Repost(TimeStampedModel):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="task_reposts",
+    )
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="reposts")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "task"],
+                name="task_repost_user_task_uniq",
+            )
+        ]
 
 
 class StoryView(models.Model):

@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import prefetch_related_objects
 from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.db import transaction, IntegrityError
@@ -25,8 +26,10 @@ import unicodedata
 
 from .serializers import ProfileSerializer, file_to_abs_url
 from .serializers import (
+    AdminUserSerializer,
     UserSerializer,
     SimpleUserSerializer,
+    UserReportSerializer,
     NewCategorySerializer,
     CategoryPSerializer,
     PersonalFilterVisibilitySerializer,
@@ -125,6 +128,14 @@ def normalize_filter_text(value):
     return "".join(char for char in value if not unicodedata.combining(char)).casefold().strip()
 
 
+def _like_window_start(sort_by):
+    from datetime import timedelta
+    from django.utils import timezone
+
+    window_days = {"top_day": 1, "top_week": 7, "top_month": 30}.get(sort_by)
+    return timezone.now() - timedelta(days=window_days) if window_days else None
+
+
 def apply_task_filters(queryset, params, owner_id=None, request_user=None, category_field="categories"):
     """Apply the shared task-filter contract to any task queryset."""
     from django.utils import timezone
@@ -189,6 +200,20 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
         queryset = queryset.annotate(like_count=Count("likes")).order_by("-like_count", "-created_at")
         if category:
             queryset = queryset.order_by("category_path_rank", "-like_count", "-created_at")
+    elif like_window_start := _like_window_start(sort_by):
+        queryset = queryset.annotate(
+            period_like_count=Count(
+                "likes",
+                filter=Q(likes__created_at__gte=like_window_start),
+                distinct=True,
+            )
+        ).order_by("-period_like_count", "-created_at")
+        if category:
+            queryset = queryset.order_by(
+                "category_path_rank",
+                "-period_like_count",
+                "-created_at",
+            )
     else:
         if category:
             queryset = queryset.order_by("category_path_rank", "-created_at")
@@ -326,12 +351,53 @@ class UserMeView(APIView):
 
         return Response(SimpleUserSerializer(user, context={'request': request}).data)
 
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_social_stats(request, user_id):
+    target = get_object_or_404(User, id=user_id)
+    return Response({
+        "followers_count": ms.Follow.objects.filter(following=target).count(),
+        "following_count": ms.Follow.objects.filter(follower=target).count(),
+        "is_following": (
+            request.user.id != target.id
+            and ms.Follow.objects.filter(follower=request.user, following=target).exists()
+        ),
+    })
+
+
+@api_view(["POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def toggle_user_follow(request, user_id):
+    target = get_object_or_404(User, id=user_id)
+    if request.user.id == target.id:
+        return Response(
+            {"detail": "No puedes seguir tu propia cuenta."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    relation = ms.Follow.objects.filter(follower=request.user, following=target)
+    if request.method == "POST":
+        ms.Follow.objects.get_or_create(follower=request.user, following=target)
+        is_following = True
+    else:
+        relation.delete()
+        is_following = False
+
+    return Response({
+        "followers_count": ms.Follow.objects.filter(following=target).count(),
+        "following_count": ms.Follow.objects.filter(follower=target).count(),
+        "is_following": is_following,
+    })
+
+
 # Relaciones que TaskSerializer / SharedTaskSerializer / PosttSerializer recorren
 # por cada item. Precargarlas mantiene constante el n?? de queries por p??gina (Fase 36).
 _USER_EXTRAS = ("profile", "fixed_images", "likes_received")
 TASK_SERIALIZER_PREFETCH = (
     *(f"user__{rel}" for rel in _USER_EXTRAS),
     "likes",
+    "reposts",
     *(f"post_comments__created_by__{rel}" for rel in _USER_EXTRAS),
     "post_comments__likes",
     "post_comments__replies__likes",
@@ -468,6 +534,14 @@ class TaskListCreateView(generics.ListCreateAPIView):
         
         if sort_by == "likes":
             qs = qs.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
+        elif like_window_start := _like_window_start(sort_by):
+            qs = qs.annotate(
+                period_like_count=Count(
+                    "likes",
+                    filter=Q(likes__created_at__gte=like_window_start),
+                    distinct=True,
+                )
+            ).order_by("-period_like_count", "-created_at")
         else:
             qs = qs.order_by('-created_at')
             
@@ -633,6 +707,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
             "subfuentes",
             "likes",
             "likes__user",
+            "reposts",
             "post_comments",
             "post_comments__created_by",
             "post_comments__likes",
@@ -642,7 +717,9 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         )
 
     def perform_update(self, serializer):
-        if serializer.instance.user != self.request.user and not self.request.user.is_staff:
+        if serializer.instance.user_id != self.request.user.id and not (
+            self.request.user.is_staff or self.request.user.is_superuser
+        ):
             raise PermissionDenied("No tienes permiso para editar esta tarea.")
         task = serializer.save()
         block_models = {
@@ -714,8 +791,10 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
             block_model.objects.filter(parent_task=task).exclude(id__in=kept_ids).delete()
 
     def perform_destroy(self, instance):
-        if instance.user != self.request.user and not self.request.user.is_staff:
-            return Response({"error": "No autorizado"}, status=403)
+        if instance.user_id != self.request.user.id and not (
+            self.request.user.is_staff or self.request.user.is_superuser
+        ):
+            raise PermissionDenied("No tienes permiso para eliminar esta tarea.")
         instance.delete()
 
 # ============================================================================
@@ -971,22 +1050,27 @@ def repost_task(request, task_id):
         # Usamos select_for_update para bloquear la fila y evitar race conditions
         task = ms.Task.objects.select_for_update().get(id=task_id)
 
-        repost_instance, created = ms.Like.objects.get_or_create(user=request.user, task=task)
+        repost_instance, created = ms.Repost.objects.get_or_create(user=request.user, task=task)
 
         if not created:
             repost_instance.delete()
             task.interaction_score = F('interaction_score') - 1
             reposted = False
         else:
+            ms.Like.objects.get_or_create(user=request.user, task=task)
             task.interaction_score = F('interaction_score') + 1
             reposted = True
-            retire_notification(dedupe_key=f"api.like:{repost_instance.pk}")
 
         task.save(update_fields=['interaction_score'])
-        # Usamos refresh_from_db para obtener el valor actualizado del score
         task.refresh_from_db(fields=['interaction_score'])
 
-        return Response({"reposted": reposted, "interaction_score": task.interaction_score}, status=status.HTTP_200_OK)
+        return Response({
+            "reposted": reposted,
+            "user_has_reposted": reposted,
+            "user_has_liked": ms.Like.objects.filter(user=request.user, task=task).exists(),
+            "likes_count": task.likes.count(),
+            "interaction_score": task.interaction_score,
+        }, status=status.HTTP_200_OK)
 
     except ms.Task.DoesNotExist:
         return Response({"error": "Task not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -1169,6 +1253,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         from django.db.models import Count
         
         qs = super().get_queryset()
+        pch = self.request.query_params.get("pch")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
         status_filter = self.request.query_params.get("status")
@@ -1179,6 +1264,9 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         favorite_users_only = self.request.query_params.get("favorite_users_only")
         verified_users_only = self.request.query_params.get("verified_users_only")
         recommended_users_only = self.request.query_params.get("recommended_users_only")
+
+        if pch:
+            qs = qs.filter(task__pch__iexact=pch)
         
         if date_filter == "hoy":
             qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=1))
@@ -1227,6 +1315,14 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 
         if sort_by == "likes":
             qs = qs.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
+        elif like_window_start := _like_window_start(sort_by):
+            qs = qs.annotate(
+                period_like_count=Count(
+                    "task__likes",
+                    filter=Q(task__likes__created_at__gte=like_window_start),
+                    distinct=True,
+                )
+            ).order_by("-period_like_count", "-created_at")
         else:
             qs = qs.order_by('-created_at')
             
@@ -1358,7 +1454,9 @@ def favorite_collection(request, user_id=None):
         return Response({"updated": True})
 
     profiles = ms.pFavorito.objects.filter(user=owner).select_related("perfil")
-    tasks = ms.Favorito.objects.filter(user=owner).select_related("task")
+    tasks = ms.Favorito.objects.filter(user=owner).select_related("task").prefetch_related(
+        *(f"task__{rel}" for rel in TASK_SERIALIZER_PREFETCH)
+    )
     if not is_owner:
         if not profile.favorite_profiles_public:
             profiles = profiles.none()
@@ -1459,7 +1557,9 @@ def search_directory(request):
     ).exclude(pk=request.user.pk)[:20] if scope in {"profiles", "both"} else []
     tasks = ms.Task.objects.filter(
         Q(title__icontains=query) | Q(description__icontains=query)
-    ).select_related("user").order_by("-created_at")[:20] if scope in {"tasks", "both"} else []
+    ).select_related("user").prefetch_related(
+        *TASK_SERIALIZER_PREFETCH
+    ).order_by("-created_at")[:20] if scope in {"tasks", "both"} else []
     return Response({
         "profiles": SimpleUserSerializer(profiles, many=True, context={"request": request}).data,
         "tasks": TaskSerializer(tasks, many=True, context={"request": request}).data,
@@ -1845,6 +1945,14 @@ class FeedView(generics.ListAPIView):
         # Aplicar ordenamiento de likes si se solicita
         if sort_by == 'likes':
             tasks = tasks.annotate(like_count=Count('likes')).order_by('-like_count', '-created_at')
+        elif like_window_start := _like_window_start(sort_by):
+            tasks = tasks.annotate(
+                period_like_count=Count(
+                    "likes",
+                    filter=Q(likes__created_at__gte=like_window_start),
+                    distinct=True,
+                )
+            ).order_by("-period_like_count", "-priority", "-created_at")
         else: # Orden por defecto (más recientes)
             tasks = tasks.order_by('-priority', '-created_at')
 
@@ -1909,6 +2017,221 @@ def verify_admin(request):
         "is_staff": request.user.is_staff,
         "is_admin": request.user.is_staff or request.user.is_superuser,
     })
+
+
+def _require_admin(request):
+    if not (request.user.is_staff or request.user.is_superuser):
+        raise PermissionDenied("Solo el equipo de administración puede realizar esta acción.")
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_users(request):
+    _require_admin(request)
+    users = User.objects.select_related("profile").order_by("-date_joined")
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        users = users.filter(
+            Q(username__icontains=search)
+            | Q(email__icontains=search)
+            | Q(first_name__icontains=search)
+            | Q(last_name__icontains=search)
+        )
+    active = request.query_params.get("is_active")
+    if active in {"true", "false"}:
+        users = users.filter(is_active=(active == "true"))
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(users, request)
+    data = AdminUserSerializer(page, many=True, context={"request": request}).data
+    return paginator.get_paginated_response(data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_tasks(request):
+    _require_admin(request)
+    tasks = ms.Task.objects.select_related("user").prefetch_related(
+        *TASK_SERIALIZER_PREFETCH
+    )
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        tasks = tasks.filter(
+            Q(title__icontains=search)
+            | Q(description__icontains=search)
+            | Q(username__icontains=search)
+        )
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(tasks.order_by("-created_at"), request)
+    data = TaskSerializer(page, many=True, context={"request": request}).data
+    return paginator.get_paginated_response(data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_set_user_active(request, user_id):
+    if not request.user.is_superuser:
+        raise PermissionDenied("Solo un superadministrador puede suspender o reactivar cuentas.")
+    target = get_object_or_404(User, id=user_id)
+    active = request.data.get("is_active")
+    if not isinstance(active, bool):
+        raise ValidationError({"is_active": "Debe ser un valor booleano."})
+    if target.id == request.user.id and not active:
+        raise ValidationError({"is_active": "No puedes suspender tu propia cuenta."})
+    if target.is_superuser and target.id != request.user.id:
+        raise ValidationError({"is_active": "No se puede suspender a otro superadministrador."})
+    target.is_active = active
+    target.save(update_fields=["is_active"])
+    return Response({"id": str(target.id), "is_active": target.is_active})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_set_user_role(request, user_id):
+    if not request.user.is_superuser:
+        raise PermissionDenied("Solo un superadministrador puede administrar roles.")
+    target = get_object_or_404(User, id=user_id)
+    is_staff = request.data.get("is_staff")
+    if not isinstance(is_staff, bool):
+        raise ValidationError({"is_staff": "Debe ser un valor booleano."})
+    if target.is_superuser:
+        raise ValidationError({"is_staff": "El rol de superadministrador no se puede modificar aquí."})
+    target.is_staff = is_staff
+    target.save(update_fields=["is_staff"])
+    return Response({"id": str(target.id), "is_staff": target.is_staff})
+
+
+def _reported_target_exists(target_type, target_id):
+    target_models = {
+        ms.UserReport.TARGET_USER: User,
+        ms.UserReport.TARGET_TASK: ms.Task,
+        ms.UserReport.TARGET_COMMENT: ms.NewPeticionCommentPost,
+        ms.UserReport.TARGET_SHARED_COMMENT: ms.SharedTaskComment,
+        ms.UserReport.TARGET_SHARED_TASK: ms.SharedTask,
+        ms.UserReport.TARGET_FORUM_POST: ms.Postt,
+    }
+    target_model = target_models.get(target_type)
+    if not target_model:
+        return False
+    try:
+        target_pk = target_model._meta.pk.to_python(target_id)
+    except (DjangoValidationError, TypeError, ValueError):
+        return False
+    return target_model.objects.filter(pk=target_pk).exists()
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def user_reports(request):
+    if request.method == "GET":
+        _require_admin(request)
+        reports = ms.UserReport.objects.select_related("reporter", "reviewed_by")
+        status_filter = request.query_params.get("status")
+        if status_filter in dict(ms.UserReport.STATUS_CHOICES):
+            reports = reports.filter(status=status_filter)
+        paginator = StandardPagination()
+        page = paginator.paginate_queryset(reports, request)
+        data = UserReportSerializer(page, many=True, context={"request": request}).data
+        return paginator.get_paginated_response(data)
+
+    target_type = request.data.get("target_type")
+    target_id = str(request.data.get("target_id") or "").strip()
+    reason = str(request.data.get("reason") or "").strip()
+    if target_type not in dict(ms.UserReport.TARGET_CHOICES):
+        raise ValidationError({"target_type": "Tipo de contenido no válido."})
+    if not target_id:
+        raise ValidationError({"target_id": "Se requiere el identificador del contenido."})
+    if not reason or len(reason) > 1000:
+        raise ValidationError({"reason": "Describe el motivo (máximo 1000 caracteres)."})
+    if not _reported_target_exists(target_type, target_id):
+        raise ValidationError({"target_id": "El contenido reportado no existe."})
+    report, created = ms.UserReport.objects.get_or_create(
+        reporter=request.user,
+        target_type=target_type,
+        target_id=target_id,
+        status=ms.UserReport.STATUS_PENDING,
+        defaults={"reason": reason},
+    )
+    if not created:
+        report.reason = reason
+        report.save(update_fields=["reason", "updated_at"])
+    return Response(
+        UserReportSerializer(report, context={"request": request}).data,
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def admin_update_report(request, report_id):
+    _require_admin(request)
+    report = get_object_or_404(ms.UserReport, id=report_id)
+    new_status = request.data.get("status")
+    if new_status not in {ms.UserReport.STATUS_RESOLVED, ms.UserReport.STATUS_DISMISSED}:
+        raise ValidationError({"status": "El estado debe ser resolved o dismissed."})
+    note = str(request.data.get("resolution_note") or "").strip()
+    if len(note) > 500:
+        raise ValidationError({"resolution_note": "Máximo 500 caracteres."})
+    report.status = new_status
+    report.reviewed_by = request.user
+    report.resolution_note = note
+    report.save(update_fields=["status", "reviewed_by", "resolution_note", "updated_at"])
+    return Response(UserReportSerializer(report, context={"request": request}).data)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def admin_delete_reported_content(request, report_id):
+    _require_admin(request)
+    report = get_object_or_404(ms.UserReport.objects.select_for_update(), id=report_id)
+    target_models = {
+        ms.UserReport.TARGET_TASK: ms.Task,
+        ms.UserReport.TARGET_COMMENT: ms.NewPeticionCommentPost,
+        ms.UserReport.TARGET_SHARED_COMMENT: ms.SharedTaskComment,
+        ms.UserReport.TARGET_SHARED_TASK: ms.SharedTask,
+        ms.UserReport.TARGET_FORUM_POST: ms.Postt,
+    }
+    target_model = target_models.get(report.target_type)
+    if target_model is None:
+        raise ValidationError({
+            "target_type": "Las cuentas se suspenden o reactivan; no se borran desde la moderación."
+        })
+    try:
+        target_pk = target_model._meta.pk.to_python(report.target_id)
+    except (DjangoValidationError, TypeError, ValueError):
+        target_pk = None
+    target = target_model.objects.filter(pk=target_pk).first() if target_pk is not None else None
+    if target is None:
+        raise ValidationError({"target_id": "El contenido ya no existe."})
+
+    target.delete()
+    report.status = ms.UserReport.STATUS_RESOLVED
+    report.reviewed_by = request.user
+    report.resolution_note = "Contenido eliminado por moderación."
+    report.save(update_fields=["status", "reviewed_by", "resolution_note", "updated_at"])
+    return Response(UserReportSerializer(report, context={"request": request}).data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def admin_suspend_reported_user(request, report_id):
+    if not request.user.is_superuser:
+        raise PermissionDenied("Solo un superadministrador puede suspender cuentas.")
+    report = get_object_or_404(ms.UserReport.objects.select_for_update(), id=report_id)
+    if report.target_type != ms.UserReport.TARGET_USER:
+        raise ValidationError({"target_type": "La denuncia no corresponde a una cuenta."})
+    target = get_object_or_404(User.objects.select_for_update(), id=report.target_id)
+    if target.id == request.user.id or target.is_superuser:
+        raise ValidationError({"target_id": "No se puede suspender esta cuenta."})
+    target.is_active = False
+    target.save(update_fields=["is_active"])
+    report.status = ms.UserReport.STATUS_RESOLVED
+    report.reviewed_by = request.user
+    report.resolution_note = "Cuenta suspendida por moderación."
+    report.save(update_fields=["status", "reviewed_by", "resolution_note", "updated_at"])
+    return Response(UserReportSerializer(report, context={"request": request}).data)
+
 
 # ============================================================================
 # ACCIONES ADMIN ADICIONALES (FIX PARA URLS)
