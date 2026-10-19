@@ -33,6 +33,7 @@ urlpatterns = [
     path('users/me/', views.UserMeView.as_view(), name='user-me'),
     path('users/me/tasks/', views.UserMyTasksView.as_view(), name='user-my-tasks'),
     path('users/<uuid:user_id>/social/', views.user_social_stats, name='user-social-stats'),
+    path('users/<uuid:user_id>/recommendations/', views.user_recommendations, name='user-recommendations'),
     path('users/<uuid:user_id>/portadas/', views.obtener_portadas_usuario, name='user-portadas'),
     path('users/<uuid:user_id>/imagen-fija/', views.obtener_imagen_fija_usuario, name='user-imagen-fija'),
     path('user-details/', views.get_user_details, name='user-details'),

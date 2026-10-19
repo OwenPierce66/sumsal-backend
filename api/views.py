@@ -378,6 +378,114 @@ def user_social_stats(request, user_id):
     })
 
 
+RECOMMENDATIONS_LIST_LIMIT = 50
+
+
+def _recommendation_payload(item, other_user, request):
+    return {
+        "id": item.id,
+        "user": SimpleUserSerializer(other_user, context={"request": request}).data,
+        "comment": item.comment,
+        "created_at": item.created_at,
+    }
+
+
+def _recommendations_response(request, target):
+    is_owner = request.user.id == target.id
+    profile = ms.Profile.objects.get_or_create(user=target)[0]
+    visible = is_owner or profile.recommendations_public
+    mine = (
+        None if is_owner
+        else ms.UserRecommendation.objects.filter(recommender=request.user, recommended=target).first()
+    )
+
+    data = {
+        "public": profile.recommendations_public,
+        "hidden": not visible,
+        "received_count": None,
+        "given_count": None,
+        "received": [],
+        "given": [],
+        "is_recommended_by_me": mine is not None,
+        "my_comment": mine.comment if mine else "",
+    }
+    if visible:
+        received = ms.UserRecommendation.objects.filter(recommended=target).select_related(
+            "recommender__profile"
+        )
+        given = ms.UserRecommendation.objects.filter(recommender=target).select_related(
+            "recommended__profile"
+        )
+        data["received_count"] = received.count()
+        data["given_count"] = given.count()
+        data["received"] = [
+            _recommendation_payload(item, item.recommender, request)
+            for item in received[:RECOMMENDATIONS_LIST_LIMIT]
+        ]
+        data["given"] = [
+            _recommendation_payload(item, item.recommended, request)
+            for item in given[:RECOMMENDATIONS_LIST_LIMIT]
+        ]
+    return data
+
+
+@api_view(["GET", "POST", "DELETE", "PATCH"])
+@permission_classes([IsAuthenticated])
+def user_recommendations(request, user_id):
+    """Recomendaciones entre usuarios (independientes de la marca de admin).
+
+    - GET: recomendaciones recibidas y dadas. Si el dueño las ocultó, otros reciben
+      `hidden: true` y listas vacías (siempre se informa si yo ya lo recomendé).
+    - POST {comment?}: recomienda (o edita el comentario). No se puede a uno mismo.
+    - DELETE: quita mi recomendación.
+    - PATCH {public}: solo el dueño; muestra u oculta sus recomendaciones.
+    """
+    target = get_object_or_404(User, id=user_id)
+
+    if request.method == "PATCH":
+        if request.user.id != target.id:
+            return Response(
+                {"detail": "Solo puedes cambiar tu propia privacidad."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        value = request.data.get("public")
+        if not isinstance(value, bool):
+            return Response(
+                {"detail": "`public` debe ser verdadero o falso."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        profile = ms.Profile.objects.get_or_create(user=target)[0]
+        profile.recommendations_public = value
+        profile.save(update_fields=["recommendations_public", "updated_at"])
+
+    elif request.method == "POST":
+        if request.user.id == target.id:
+            return Response(
+                {"detail": "No puedes recomendarte a ti mismo."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        comment = " ".join(str(request.data.get("comment") or "").split())
+        if len(comment) > 200:
+            return Response(
+                {"detail": "El comentario no puede pasar de 200 caracteres."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        _, created = ms.UserRecommendation.objects.update_or_create(
+            recommender=request.user,
+            recommended=target,
+            defaults={"comment": comment},
+        )
+        return Response(
+            _recommendations_response(request, target),
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    elif request.method == "DELETE":
+        ms.UserRecommendation.objects.filter(recommender=request.user, recommended=target).delete()
+
+    return Response(_recommendations_response(request, target))
+
+
 # Relaciones que TaskSerializer / SharedTaskSerializer / PosttSerializer recorren
 # por cada item. Precargarlas mantiene constante el n?? de queries por p??gina (Fase 36).
 _USER_EXTRAS = ("profile", "fixed_images", "likes_received")

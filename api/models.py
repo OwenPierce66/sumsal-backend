@@ -110,6 +110,10 @@ class Profile(TimeStampedModel):
         _("show favorite tasks"), default=False
     )
     role = models.IntegerField(_("role"), default=1, help_text=_("1=user, 2=editor, 3=admin"))
+    recommendations_public = models.BooleanField(
+        _("show recommendations"), default=True,
+        help_text=_("Si es falso, otros no ven las recomendaciones que recibió ni las que dio."),
+    )
 
     class Meta:
         verbose_name = _("profile")
@@ -118,6 +122,40 @@ class Profile(TimeStampedModel):
 
     def __str__(self):
         return f"Profile for {self.user.email}"
+
+
+class UserRecommendation(TimeStampedModel):
+    """Un usuario recomienda a otro. Una por pareja, con comentario opcional.
+
+    Es independiente de la marca de admin `Profile.is_recommended`.
+    """
+    recommender = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="recommendations_given",
+    )
+    recommended = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="recommendations_received",
+    )
+    comment = models.CharField(max_length=200, blank=True, default="")
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["recommender", "recommended"],
+                name="unique_user_recommendation",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(recommender=models.F("recommended")),
+                name="prevent_self_recommendation",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.recommender_id} recomienda a {self.recommended_id}"
 
 
 class UserReport(TimeStampedModel):
