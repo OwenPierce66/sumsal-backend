@@ -1,5 +1,7 @@
 from django.contrib.auth import get_user_model
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -147,3 +149,55 @@ class UserRecommendationTests(TestCase):
         url = reverse("admin-recommend-user", kwargs={"user_id": admin.id})
         self.assertEqual(admin_client.post(url, {"is_recommended": True}, format="json").status_code, 200)
         self.assertFalse(ms.UserRecommendation.objects.exists())
+
+    def test_each_listed_person_has_count_and_my_state(self):
+        # Carol fue recomendada por Alice (yo) y por Bob; Bob recomendó a Carol y a Alice.
+        ms.UserRecommendation.objects.create(recommender=self.alice, recommended=self.carol)
+        ms.UserRecommendation.objects.create(recommender=self.bob, recommended=self.carol)
+        ms.UserRecommendation.objects.create(recommender=self.bob, recommended=self.alice)
+
+        response = self.client.get(self.url(self.carol))
+        rows = {str(row["user"]["id"]): row for row in response.data["received"]}
+        # Alice (yo) en la lista de Carol: tiene 1 recomendación recibida (de Bob) y no me recomiendo.
+        self.assertEqual(rows[str(self.alice.id)]["recommendations_count"], 1)
+        self.assertFalse(rows[str(self.alice.id)]["is_recommended_by_me"])
+        # Bob: nadie lo ha recomendado, y yo tampoco.
+        self.assertEqual(rows[str(self.bob.id)]["recommendations_count"], 0)
+        self.assertFalse(rows[str(self.bob.id)]["is_recommended_by_me"])
+
+        # En la lista "dada" de Bob: Carol (2 recomendaciones, yo la recomiendo) y Alice.
+        bob_given = {str(row["user"]["id"]): row for row in self.client.get(self.url(self.bob)).data["given"]}
+        self.assertEqual(bob_given[str(self.carol.id)]["recommendations_count"], 2)
+        self.assertTrue(bob_given[str(self.carol.id)]["is_recommended_by_me"])
+
+    def test_listed_person_with_hidden_recommendations_has_null_count(self):
+        ms.UserRecommendation.objects.create(recommender=self.bob, recommended=self.carol)
+        profile = ms.Profile.objects.get_or_create(user=self.bob)[0]
+        profile.recommendations_public = False
+        profile.save()
+
+        rows = self.client.get(self.url(self.carol)).data["received"]
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["recommendations_count"])
+        # Aun oculta, sí se sabe si yo la recomiendo.
+        self.assertFalse(rows[0]["is_recommended_by_me"])
+        self.client.post(self.url(self.bob), {}, format="json")
+        rows = self.client.get(self.url(self.carol)).data["received"]
+        self.assertTrue(rows[0]["is_recommended_by_me"])
+
+    def test_list_does_not_query_per_row(self):
+        others = [
+            User.objects.create_user(username=f"u{i}", email=f"u{i}@example.com", password="pw-test-1")
+            for i in range(6)
+        ]
+        for other in others:
+            ms.UserRecommendation.objects.create(recommender=other, recommended=self.carol)
+
+        with CaptureQueriesContext(connection) as few:
+            self.client.get(self.url(self.carol))
+        for i in range(6, 12):
+            other = User.objects.create_user(username=f"u{i}", email=f"u{i}@example.com", password="pw-test-1")
+            ms.UserRecommendation.objects.create(recommender=other, recommended=self.carol)
+        with CaptureQueriesContext(connection) as many:
+            self.client.get(self.url(self.carol))
+        self.assertLessEqual(len(many), len(few) + 2)

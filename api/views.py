@@ -381,13 +381,50 @@ def user_social_stats(request, user_id):
 RECOMMENDATIONS_LIST_LIMIT = 50
 
 
-def _recommendation_payload(item, other_user, request):
+def _recommendation_payload(item, other_user, request, stats):
+    """Fila de la lista. `stats` trae, por persona, el conteo de recomendaciones que
+    recibió (None si las ocultó) y si quien consulta ya la recomienda."""
+    person = stats.get(other_user.id, {})
     return {
         "id": item.id,
         "user": SimpleUserSerializer(other_user, context={"request": request}).data,
         "comment": item.comment,
         "created_at": item.created_at,
+        "recommendations_count": person.get("count"),
+        "is_recommended_by_me": person.get("mine", False),
     }
+
+
+def _people_recommendation_stats(request, user_ids):
+    """Para cada usuario: recomendaciones recibidas (None si su perfil las oculta y no
+    es quien consulta) y si quien consulta ya lo recomienda. 3 consultas en total."""
+    user_ids = set(user_ids)
+    if not user_ids:
+        return {}
+    counts = dict(
+        ms.UserRecommendation.objects.filter(recommended_id__in=user_ids)
+        .order_by()
+        .values_list("recommended_id")
+        .annotate(total=Count("id"))
+        .values_list("recommended_id", "total")
+    )
+    public_by_user = dict(
+        ms.Profile.objects.filter(user_id__in=user_ids)
+        .values_list("user_id", "recommendations_public")
+    )
+    mine = set(
+        ms.UserRecommendation.objects.filter(
+            recommender=request.user, recommended_id__in=user_ids
+        ).values_list("recommended_id", flat=True)
+    )
+    stats = {}
+    for uid in user_ids:
+        visible = uid == request.user.id or public_by_user.get(uid, True)
+        stats[uid] = {
+            "count": counts.get(uid, 0) if visible else None,
+            "mine": uid in mine,
+        }
+    return stats
 
 
 def _recommendations_response(request, target):
@@ -412,19 +449,26 @@ def _recommendations_response(request, target):
     if visible:
         received = ms.UserRecommendation.objects.filter(recommended=target).select_related(
             "recommender__profile"
-        )
+        ).prefetch_related("recommender__fixed_images", "recommender__likes_received")
         given = ms.UserRecommendation.objects.filter(recommender=target).select_related(
             "recommended__profile"
-        )
+        ).prefetch_related("recommended__fixed_images", "recommended__likes_received")
         data["received_count"] = received.count()
         data["given_count"] = given.count()
+        received_items = list(received[:RECOMMENDATIONS_LIST_LIMIT])
+        given_items = list(given[:RECOMMENDATIONS_LIST_LIMIT])
+        stats = _people_recommendation_stats(
+            request,
+            [item.recommender_id for item in received_items]
+            + [item.recommended_id for item in given_items],
+        )
         data["received"] = [
-            _recommendation_payload(item, item.recommender, request)
-            for item in received[:RECOMMENDATIONS_LIST_LIMIT]
+            _recommendation_payload(item, item.recommender, request, stats)
+            for item in received_items
         ]
         data["given"] = [
-            _recommendation_payload(item, item.recommended, request)
-            for item in given[:RECOMMENDATIONS_LIST_LIMIT]
+            _recommendation_payload(item, item.recommended, request, stats)
+            for item in given_items
         ]
     return data
 
