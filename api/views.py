@@ -2102,8 +2102,21 @@ def admin_verify_user(request, user_id):
 def admin_recommend_user(request, user_id):
     if not request.user.is_superuser: return Response(status=403)
     user = get_object_or_404(User, id=user_id)
-    user.profile.is_recommended = bool(request.data.get("is_recommended", True))
-    user.profile.save()
+    is_recommended = bool(request.data.get("is_recommended", True))
+    with transaction.atomic():
+        user.profile.is_recommended = is_recommended
+        user.profile.save()
+        # Además de la insignia, queda registrado a quién recomienda este admin
+        # (se ve en "Recomendaciones" del perfil de ambos).
+        if request.user.id != user.id:
+            if is_recommended:
+                ms.UserRecommendation.objects.get_or_create(
+                    recommender=request.user, recommended=user,
+                )
+            else:
+                ms.UserRecommendation.objects.filter(
+                    recommender=request.user, recommended=user,
+                ).delete()
     return Response({"is_recommended": user.profile.is_recommended})
 
 @api_view(["GET"])

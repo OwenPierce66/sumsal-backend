@@ -103,3 +103,47 @@ class UserRecommendationTests(TestCase):
         self.client.post(self.url(self.bob), {}, format="json")
         profile = ms.Profile.objects.get_or_create(user=self.bob)[0]
         self.assertFalse(profile.is_recommended)
+
+    def test_admin_badge_also_records_who_the_admin_recommends(self):
+        admin = User.objects.create_superuser(username="boss", email="boss@example.com", password="pw-test-1")
+        admin_client = APIClient()
+        admin_client.force_authenticate(admin)
+        admin_url = reverse("admin-recommend-user", kwargs={"user_id": self.bob.id})
+
+        response = admin_client.post(admin_url, {"is_recommended": True}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(ms.Profile.objects.get(user=self.bob).is_recommended)
+        self.assertTrue(
+            ms.UserRecommendation.objects.filter(recommender=admin, recommended=self.bob).exists()
+        )
+
+        # Aparece como "dada" en el perfil del admin y como "recibida" en el de Bob.
+        given = admin_client.get(self.url(admin))
+        self.assertEqual(given.data["given_count"], 1)
+        received = self.client.get(self.url(self.bob))
+        self.assertEqual(received.data["received_count"], 1)
+
+        # Repetir no duplica; quitar la insignia borra el registro del admin.
+        admin_client.post(admin_url, {"is_recommended": True}, format="json")
+        self.assertEqual(ms.UserRecommendation.objects.filter(recommended=self.bob).count(), 1)
+        admin_client.post(admin_url, {"is_recommended": False}, format="json")
+        self.assertFalse(ms.Profile.objects.get(user=self.bob).is_recommended)
+        self.assertFalse(ms.UserRecommendation.objects.filter(recommended=self.bob).exists())
+
+    def test_admin_removing_badge_keeps_other_users_recommendations(self):
+        admin = User.objects.create_superuser(username="boss", email="boss@example.com", password="pw-test-1")
+        ms.UserRecommendation.objects.create(recommender=self.alice, recommended=self.bob)
+        admin_client = APIClient()
+        admin_client.force_authenticate(admin)
+        admin_url = reverse("admin-recommend-user", kwargs={"user_id": self.bob.id})
+        admin_client.post(admin_url, {"is_recommended": True}, format="json")
+        admin_client.post(admin_url, {"is_recommended": False}, format="json")
+        self.assertEqual(ms.UserRecommendation.objects.filter(recommended=self.bob).count(), 1)
+
+    def test_admin_recommending_self_does_not_break(self):
+        admin = User.objects.create_superuser(username="boss", email="boss@example.com", password="pw-test-1")
+        admin_client = APIClient()
+        admin_client.force_authenticate(admin)
+        url = reverse("admin-recommend-user", kwargs={"user_id": admin.id})
+        self.assertEqual(admin_client.post(url, {"is_recommended": True}, format="json").status_code, 200)
+        self.assertFalse(ms.UserRecommendation.objects.exists())
