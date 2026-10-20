@@ -268,3 +268,26 @@ class FollowHierarchyTests(TestCase):
         self.assertTrue(following.data["users"][0]["is_following"])
         followers = self.client.get(reverse("user-followers", kwargs={"user_id": self.target.id}))
         self.assertEqual(followers.data["count"], 1)
+
+
+class MyRelationsTests(TestCase):
+    def test_returns_following_favorites_and_pinned(self):
+        me = User.objects.create_user(username="me", email="me@example.com", password="x")
+        a = User.objects.create_user(username="a", email="a@example.com", password="x")
+        b = User.objects.create_user(username="b", email="b@example.com", password="x")
+        c = User.objects.create_user(username="c", email="c@example.com", password="x")
+        client = APIClient()
+        client.force_authenticate(me)
+        client.post(reverse("user-follow-toggle", kwargs={"user_id": a.id}))
+        pFavorito.objects.create(user=me, perfil=b, is_pinned=False)
+        pFavorito.objects.create(user=me, perfil=c, is_pinned=True)
+
+        data = client.get(reverse("user-my-relations")).data
+        self.assertEqual(data["me"], str(me.id))
+        # Favoritear sigue automaticamente (senal), asi que b y c tambien se siguen.
+        self.assertEqual(set(data["following"]), {str(a.id), str(b.id), str(c.id)})
+        self.assertEqual(set(data["favorites"]), {str(b.id), str(c.id)})
+        self.assertEqual(data["pinned"], [str(c.id)])
+
+    def test_requires_authentication(self):
+        self.assertEqual(APIClient().get(reverse("user-my-relations")).status_code, 401)

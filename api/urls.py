@@ -32,6 +32,7 @@ urlpatterns = [
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
     path('users/me/', views.UserMeView.as_view(), name='user-me'),
     path('users/me/tasks/', views.UserMyTasksView.as_view(), name='user-my-tasks'),
+    path('users/me/relations/', views.my_relations, name='user-my-relations'),
     path('users/<uuid:user_id>/social/', views.user_social_stats, name='user-social-stats'),
     path('users/<uuid:user_id>/follow/', views.toggle_user_follow, name='user-follow-toggle'),
     path('users/<uuid:user_id>/followers/', views.user_followers, name='user-followers'),

@@ -1769,6 +1769,33 @@ def favorite_collection(request, user_id=None):
     })
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_relations(request):
+    """
+    Relaciones del usuario autenticado con otros perfiles, en una sola respuesta.
+    Sirve para pintar el corazon de seguir junto a cualquier nombre de la app.
+    """
+    following = [
+        str(pk)
+        for pk in ms.Follow.objects.filter(follower=request.user).values_list("following_id", flat=True)
+    ]
+    favorites = []
+    pinned = []
+    for perfil_id, is_pinned in ms.pFavorito.objects.filter(user=request.user).values_list(
+        "perfil_id", "is_pinned"
+    ):
+        favorites.append(str(perfil_id))
+        if is_pinned:
+            pinned.append(str(perfil_id))
+    return Response({
+        "me": str(request.user.id),
+        "following": following,
+        "favorites": favorites,
+        "pinned": pinned,
+    })
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def toggle_favorite_pin(request):
