@@ -101,3 +101,48 @@ class FavoriteProfileSocialStatsTests(TestCase):
                 "is_recommended": False,
             },
         )
+
+
+class PinImpliesFavoriteTests(TestCase):
+    """Anclar sin tenerlo en favoritos lo agrega primero."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="pinner", email="pinner@example.com", password="test-password"
+        )
+        self.target = User.objects.create_user(
+            username="pinned", email="pinned@example.com", password="test-password"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_pin_profile_not_in_favorites_adds_it(self):
+        self.assertFalse(pFavorito.objects.filter(user=self.user, perfil=self.target).exists())
+        response = self.client.post(
+            reverse("favorite-pin"),
+            {"type": "profile", "target_id": str(self.target.id), "is_pinned": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        favorite = pFavorito.objects.get(user=self.user, perfil=self.target)
+        self.assertTrue(favorite.is_pinned)
+
+    def test_pin_task_not_in_favorites_adds_it(self):
+        from api.models import Favorito, Task
+
+        task = Task.objects.create(user=self.target, title="x", pch="peticiones")
+        response = self.client.post(
+            reverse("favorite-pin"),
+            {"type": "task", "target_id": str(task.id), "is_pinned": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Favorito.objects.get(user=self.user, task=task).is_pinned)
+
+    def test_unpin_unknown_favorite_is_still_404(self):
+        response = self.client.post(
+            reverse("favorite-pin"),
+            {"type": "profile", "target_id": str(self.target.id), "is_pinned": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 404)

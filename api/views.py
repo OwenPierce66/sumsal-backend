@@ -1705,23 +1705,37 @@ def toggle_favorite_pin(request):
     kind = request.data.get("type")
     item_id = request.data.get("id")
     target_id = request.data.get("target_id")
+    should_pin = bool(request.data.get("is_pinned", True))
+    # Anclar implica favorito: si todavia no lo es, se agrega primero.
+    auto_add = should_pin and not item_id
     if kind == "profile":
-        favorite = get_object_or_404(
-            ms.pFavorito,
-            **({"id": item_id} if item_id else {"perfil_id": target_id}),
-            user=request.user,
-        )
+        if auto_add:
+            target_user = get_object_or_404(User, id=target_id)
+            favorite, _ = ms.pFavorito.objects.get_or_create(
+                user=request.user, perfil=target_user
+            )
+        else:
+            favorite = get_object_or_404(
+                ms.pFavorito,
+                **({"id": item_id} if item_id else {"perfil_id": target_id}),
+                user=request.user,
+            )
     elif kind == "task":
-        favorite = get_object_or_404(
-            ms.Favorito,
-            **({"id": item_id} if item_id else {"task_id": target_id}),
-            user=request.user,
-        )
+        if auto_add:
+            target_task = get_object_or_404(ms.Task, id=target_id)
+            favorite, _ = ms.Favorito.objects.get_or_create(
+                user=request.user, task=target_task
+            )
+        else:
+            favorite = get_object_or_404(
+                ms.Favorito,
+                **({"id": item_id} if item_id else {"task_id": target_id}),
+                user=request.user,
+            )
     else:
         raise ValidationError({"type": "Debe ser profile o task."})
 
     model = favorite.__class__
-    should_pin = bool(request.data.get("is_pinned", True))
     with transaction.atomic():
         ordered = list(model.objects.select_for_update().filter(user=request.user).order_by(
             "-is_pinned", "position", "created_at", "pk"
