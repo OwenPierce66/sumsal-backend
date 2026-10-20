@@ -73,3 +73,31 @@ class FavoriteProfileSocialStatsTests(TestCase):
     def test_follow_endpoint_no_longer_exists(self):
         response = self.client.post(f"/api/users/{self.target.id}/follow/")
         self.assertEqual(response.status_code, 404)
+
+    def test_admin_state_only_for_superuser(self):
+        response = self.client.get(self.stats_url)
+        self.assertNotIn("admin_state", response.data)
+
+        staff = User.objects.create_user(
+            username="staffer", email="staffer@example.com", password="test-password", is_staff=True
+        )
+        self.client.force_authenticate(staff)
+        self.assertNotIn("admin_state", self.client.get(self.stats_url).data)
+
+        admin = User.objects.create_superuser(
+            username="boss", email="boss@example.com", password="test-password"
+        )
+        self.client.force_authenticate(admin)
+        self.target.is_active = False
+        self.target.save()
+        response = self.client.get(self.stats_url)
+        self.assertEqual(
+            response.data["admin_state"],
+            {
+                "is_active": False,
+                "is_staff": False,
+                "is_superuser": False,
+                "is_verified": False,
+                "is_recommended": False,
+            },
+        )

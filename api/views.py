@@ -366,7 +366,7 @@ def user_social_stats(request, user_id):
     is_owner = request.user.id == target.id
     profile = getattr(target, "profile", None)
     favorites_visible = is_owner or bool(getattr(profile, "favorite_profiles_public", False))
-    return Response({
+    data = {
         "favorited_by_count": ms.pFavorito.objects.filter(perfil=target).count(),
         "favorites_count": (
             ms.pFavorito.objects.filter(user=target).count() if favorites_visible else None
@@ -375,7 +375,17 @@ def user_social_stats(request, user_id):
             not is_owner
             and ms.pFavorito.objects.filter(user=request.user, perfil=target).exists()
         ),
-    })
+    }
+    if request.user.is_superuser:
+        # Solo el superadmin ve el estado de la cuenta, para el menu de moderacion del perfil.
+        data["admin_state"] = {
+            "is_active": target.is_active,
+            "is_staff": target.is_staff,
+            "is_superuser": target.is_superuser,
+            "is_verified": bool(getattr(profile, "is_verified", False)),
+            "is_recommended": bool(getattr(profile, "is_recommended", False)),
+        }
+    return Response(data)
 
 
 RECOMMENDATIONS_LIST_LIMIT = 50
