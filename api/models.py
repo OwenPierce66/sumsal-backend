@@ -347,6 +347,13 @@ class Task(TimeStampedModel):
     image = models.ImageField(upload_to="tasks/", null=True, blank=True)
     video = models.FileField(upload_to="tasks/videos/", null=True, blank=True)
     story_is_shared = models.BooleanField(default=False)
+    # Historia publicada directamente (24h). Solo pasa a las aportaciones
+    # publicas si el dueño la guarda (story_saved=True).
+    is_story = models.BooleanField(default=False)
+    story_saved = models.BooleanField(default=False)
+    # Ya se le notifico al dueño que la historia termino (ver
+    # notifications.ensure_story_expiry_notifications).
+    story_prompted = models.BooleanField(default=False)
     story_source_task = models.ForeignKey(
         "self",
         null=True,
@@ -383,6 +390,9 @@ class Task(TimeStampedModel):
 class Like(TimeStampedModel):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="task_likes")
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="likes")
+    # Oculto: cuenta en el total pero el nombre no aparece en la lista hasta
+    # que la misma persona vuelva a dar like (ver toggle_task_like).
+    is_hidden = models.BooleanField(default=False)
 
     class Meta:
         unique_together = ("user", "task")

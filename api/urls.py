@@ -46,6 +46,7 @@ urlpatterns = [
     path('stories/share-task/', views.share_task_to_story, name='story-share-task'),
     path('stories/<uuid:story_id>/view/', views.record_story_view, name='story-view'),
     path('stories/<uuid:story_id>/viewers/', views.story_viewers, name='story-viewers'),
+    path('stories/<uuid:story_id>/save/', views.save_story_to_aportaciones, name='story-save'),
     path('feed/', views.FeedView.as_view(), name='feed'),
     path('tasks/<uuid:id>/', views.TaskDetailView.as_view(), name='task-detail'),
     path('tasks/<uuid:task_id>/like/', views.toggle_task_like, name='task-like'),

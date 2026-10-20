@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from .models import Notification
 from .notification_serializers import NotificationSerializer
+from .notifications import ensure_story_expiry_notifications
 
 
 class NotificationPagination(PageNumberPagination):
@@ -22,6 +23,7 @@ class NotificationListView(generics.ListAPIView):
     pagination_class = NotificationPagination
 
     def get_queryset(self):
+        ensure_story_expiry_notifications(self.request.user)
         notifications = Notification.objects.filter(
             recipient=self.request.user
         ).select_related("actor").prefetch_related("actor__fixed_images")
@@ -37,6 +39,7 @@ class NotificationListView(generics.ListAPIView):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def unread_count(request):
+    ensure_story_expiry_notifications(request.user)
     count = Notification.objects.filter(
         recipient=request.user,
         is_read=False,

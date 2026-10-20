@@ -79,3 +79,45 @@ def retire_notification(*, dedupe_key, recipient=None):
     if recipient is not None:
         notifications = notifications.filter(recipient=recipient)
     return notifications.delete()[0]
+
+
+STORY_EXPIRED_NOTIFICATION = "story_expired"
+
+
+def ensure_story_expiry_notifications(user):
+    """Cuando una historia (publicada directamente) cumple 24 h, le pregunta al
+    dueño si quiere guardarla en sus aportaciones.
+
+    No hay tarea periodica (celery beat), asi que se genera al consultar las
+    notificaciones. `story_prompted` evita volver a crearla si el usuario la
+    descarta."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from .models import Task
+
+    cutoff = timezone.now() - timedelta(hours=24)
+    pending = list(
+        Task.objects.filter(
+            user=user,
+            is_story=True,
+            story_saved=False,
+            story_prompted=False,
+            created_at__lt=cutoff,
+        )[:50]
+    )
+    for story in pending:
+        create_notification(
+            recipient=user,
+            actor=None,
+            notification_type=STORY_EXPIRED_NOTIFICATION,
+            target_type="task",
+            target_id=story.pk,
+            data={
+                "text": "Tu historia de 24 horas terminó. ¿Quieres guardarla en tus aportaciones?",
+                "story_id": str(story.pk),
+            },
+            dedupe_key=f"story-expired:{story.pk}",
+        )
+        Task.objects.filter(pk=story.pk).update(story_prompted=True)

@@ -44,3 +44,19 @@ class NotificationSerializer(serializers.ModelSerializer):
 
     def get_text(self, obj):
         return obj.data.get("text", "")
+
+    def to_representation(self, obj):
+        data = super().to_representation(obj)
+        if obj.notification_type == "story_expired":
+            from .models import Task
+
+            story = Task.objects.filter(pk=obj.target_id).first()
+            request = self.context.get("request")
+            data["data"] = {
+                **(data.get("data") or {}),
+                "story_exists": bool(story),
+                "story_saved": bool(story and story.story_saved),
+                "story_image": file_to_abs_url(story.image, request) if story and story.image else None,
+                "story_video": file_to_abs_url(story.video, request) if story and story.video else None,
+            }
+        return data

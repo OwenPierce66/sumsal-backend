@@ -521,7 +521,10 @@ class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.Task
         fields = '__all__'
-        read_only_fields = ["id", "user", "share_count", "created_at"]
+        read_only_fields = [
+            "id", "user", "share_count", "created_at",
+            "is_story", "story_saved", "story_prompted",
+        ]
 
     def validate_video(self, value):
         return validate_video_upload(value)
@@ -716,7 +719,12 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
-            return related_has_user(obj, "likes", request.user)
+            if is_prefetched(obj, "likes"):
+                return any(
+                    like.user_id == request.user.id and not like.is_hidden
+                    for like in obj.likes.all()
+                )
+            return obj.likes.filter(user=request.user, is_hidden=False).exists()
         return False
 
     def get_user_has_reposted(self, obj):
