@@ -158,6 +158,35 @@ class UserRecommendation(TimeStampedModel):
         return f"{self.recommender_id} recomienda a {self.recommended_id}"
 
 
+class Follow(TimeStampedModel):
+    """Seguir a un perfil. Jerarquía: Seguir -> Favorito (pFavorito) -> Anclado.
+
+    Favoritar o anclar a alguien lo sigue automaticamente, y dejar de seguir
+    lo quita de favoritos (y por tanto de anclados). Ver api/signals.py."""
+    follower = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="following_relationships",
+    )
+    following = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="follower_relationships",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["follower", "following"],
+                name="unique_user_follow",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(follower=models.F("following")),
+                name="prevent_self_follow",
+            ),
+        ]
+
+
 class UserReport(TimeStampedModel):
     TARGET_USER = "user"
     TARGET_TASK = "task"

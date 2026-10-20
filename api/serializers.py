@@ -65,7 +65,7 @@ def related_has_user(obj, relation, user):
     return getattr(obj, relation).filter(user=user).exists()
 
 
-def my_ids(request, key, model, field):
+def my_ids(request, key, model, field, owner_field="user"):
     """
     Conjunto de ids (`field`) de los registros de `model` creados por el usuario
     autenticado. Se consulta UNA vez por petici??n y se reutiliza para todos los
@@ -76,7 +76,7 @@ def my_ids(request, key, model, field):
     cache = request.__dict__.setdefault("_perf_cache", {})
     if key not in cache:
         cache[key] = set(
-            model.objects.filter(user=request.user).values_list(field, flat=True)
+            model.objects.filter(**{owner_field: request.user}).values_list(field, flat=True)
         )
     return cache[key]
 
@@ -279,6 +279,7 @@ class SimpleUserSerializer(serializers.ModelSerializer):
     user_image = serializers.SerializerMethodField()
     has_liked = serializers.SerializerMethodField()
     is_favorited = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -295,7 +296,14 @@ class SimpleUserSerializer(serializers.ModelSerializer):
             "user_image",
             "has_liked",
             "is_favorited",
+            "is_following",
         ]
+
+    def get_is_following(self, obj):
+        request = self.context.get("request")
+        if request and request.user.is_authenticated:
+            return obj.pk in my_ids(request, "follow", ms.Follow, "following_id", owner_field="follower")
+        return False
 
     def get_is_favorited(self, obj):
         request = self.context.get("request")

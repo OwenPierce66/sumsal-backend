@@ -70,10 +70,6 @@ class FavoriteProfileSocialStatsTests(TestCase):
         self.assertEqual(response.data["favorites_count"], 1)
         self.assertFalse(response.data["is_favorited"])
 
-    def test_follow_endpoint_no_longer_exists(self):
-        response = self.client.post(f"/api/users/{self.target.id}/follow/")
-        self.assertEqual(response.status_code, 404)
-
     def test_admin_state_only_for_superuser(self):
         response = self.client.get(self.stats_url)
         self.assertNotIn("admin_state", response.data)
@@ -146,3 +142,129 @@ class PinImpliesFavoriteTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 404)
+
+
+class FollowHierarchyTests(TestCase):
+    """Jerarquía: Seguir -> Favorito -> Anclado."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="me", email="me@example.com", password="test-password"
+        )
+        self.target = User.objects.create_user(
+            username="them", email="them@example.com", password="test-password"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.follow_url = reverse("user-follow-toggle", kwargs={"user_id": self.target.id})
+        self.stats_url = reverse("user-social-stats", kwargs={"user_id": self.target.id})
+
+    def test_follow_and_unfollow_update_stats(self):
+        from api.models import Follow
+
+        self.assertEqual(self.client.post(self.follow_url).status_code, 200)
+        self.assertTrue(Follow.objects.filter(follower=self.user, following=self.target).exists())
+        stats = self.client.get(self.stats_url).data
+        self.assertEqual(stats["followers_count"], 1)
+        self.assertTrue(stats["is_following"])
+        # Seguir NO es favorito.
+        self.assertFalse(stats["is_favorited"])
+        self.assertFalse(pFavorito.objects.filter(user=self.user, perfil=self.target).exists())
+
+        # Repetir POST es idempotente.
+        self.client.post(self.follow_url)
+        self.assertEqual(Follow.objects.count(), 1)
+
+        self.assertEqual(self.client.delete(self.follow_url).status_code, 200)
+        self.assertFalse(self.client.get(self.stats_url).data["is_following"])
+
+    def test_cannot_follow_yourself(self):
+        url = reverse("user-follow-toggle", kwargs={"user_id": self.user.id})
+        self.assertEqual(self.client.post(url).status_code, 400)
+
+    def test_favoriting_follows_automatically(self):
+        from api.models import Follow
+
+        self.client.post(reverse("pfavorito-add"), {"perfil_id": str(self.target.id)})
+        self.assertTrue(Follow.objects.filter(follower=self.user, following=self.target).exists())
+        self.assertTrue(self.client.get(self.stats_url).data["is_following"])
+
+    def test_pinning_favorites_and_follows(self):
+        from api.models import Follow
+
+        self.client.post(
+            reverse("favorite-pin"),
+            {"type": "profile", "target_id": str(self.target.id), "is_pinned": True},
+            format="json",
+        )
+        self.assertTrue(pFavorito.objects.get(user=self.user, perfil=self.target).is_pinned)
+        self.assertTrue(Follow.objects.filter(follower=self.user, following=self.target).exists())
+
+    def test_unfollow_removes_favorite_and_pin(self):
+        self.client.post(
+            reverse("favorite-pin"),
+            {"type": "profile", "target_id": str(self.target.id), "is_pinned": True},
+            format="json",
+        )
+        response = self.client.delete(self.follow_url)
+        self.assertFalse(response.data["is_favorited"])
+        self.assertFalse(pFavorito.objects.filter(user=self.user, perfil=self.target).exists())
+
+    def test_unfavoriting_keeps_following(self):
+        from api.models import Follow
+
+        self.client.post(reverse("pfavorito-add"), {"perfil_id": str(self.target.id)})
+        self.client.post(reverse("pfavorito-add"), {"perfil_id": str(self.target.id)})  # quita
+        self.assertFalse(pFavorito.objects.filter(user=self.user, perfil=self.target).exists())
+        self.assertTrue(Follow.objects.filter(follower=self.user, following=self.target).exists())
+
+    def test_follow_notification_is_not_duplicated_by_favorite(self):
+        from api.models import Notification
+
+        self.client.post(self.follow_url)
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.target, notification_type="user_follow"
+            ).count(),
+            1,
+        )
+        other = User.objects.create_user(
+            username="o", email="o@example.com", password="test-password"
+        )
+        other_client = APIClient()
+        other_client.force_authenticate(other)
+        other_client.post(reverse("pfavorito-add"), {"perfil_id": str(self.target.id)})
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.target, actor=other, notification_type="user_follow"
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            Notification.objects.filter(
+                recipient=self.target, actor=other, notification_type="profile_favorite"
+            ).count(),
+            1,
+        )
+
+    def test_followed_users_only_filter_and_lists(self):
+        from api.models import Task
+
+        mine = Task.objects.create(user=self.target, title="de seguido", pch="peticiones")
+        stranger = User.objects.create_user(
+            username="s", email="s@example.com", password="test-password"
+        )
+        other = Task.objects.create(user=stranger, title="de otro", pch="peticiones")
+        self.client.post(self.follow_url)
+
+        response = self.client.get(reverse("task-list-create"), {"followed_users_only": "true"})
+        data = response.data["results"] if "results" in response.data else response.data
+        found = {str(item["id"]) for item in data}
+        self.assertIn(str(mine.id), found)
+        self.assertNotIn(str(other.id), found)
+
+        following = self.client.get(reverse("user-following", kwargs={"user_id": self.user.id}))
+        self.assertEqual(following.data["count"], 1)
+        self.assertTrue(following.data["users"][0]["is_following"])
+        followers = self.client.get(reverse("user-followers", kwargs={"user_id": self.target.id}))
+        self.assertEqual(followers.data["count"], 1)

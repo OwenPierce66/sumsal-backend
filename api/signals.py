@@ -14,6 +14,7 @@ from massaging.models import GroupMessage, GroupMembership, Message, MessageLike
 
 from .models import (
     Favorito,
+    Follow,
     Like,
     LikeCommentPost,
     LikeP,
@@ -543,6 +544,48 @@ def notify_profile_favorite(sender, instance, created, **kwargs):
 
 @receiver(post_delete, sender=pFavorito)
 def retire_profile_favorite(sender, instance, **kwargs):
+    _retire(instance, kwargs.get("origin"))
+
+
+@receiver(post_save, sender=pFavorito)
+def follow_when_favorited(sender, instance, created, **kwargs):
+    """Favoritar (o anclar) a alguien lo sigue automaticamente."""
+    if created and instance.user_id != instance.perfil_id:
+        Follow.objects.get_or_create(
+            follower_id=instance.user_id, following_id=instance.perfil_id
+        )
+
+
+@receiver(post_delete, sender=Follow)
+def unfavorite_when_unfollowed(sender, instance, **kwargs):
+    """Dejar de seguir quita tambien el favorito (y con el, el anclaje)."""
+    pFavorito.objects.filter(
+        user_id=instance.follower_id, perfil_id=instance.following_id
+    ).delete()
+
+
+@receiver(post_save, sender=Follow)
+def notify_follow(sender, instance, created, **kwargs):
+    if not created:
+        return
+    if pFavorito.objects.filter(
+        user_id=instance.follower_id, perfil_id=instance.following_id
+    ).exists():
+        # Ya se aviso con la notificacion de favorito; no se duplica.
+        return
+    _notify(
+        instance,
+        recipient=instance.following,
+        actor=instance.follower,
+        notification_type="user_follow",
+        target_type="profile",
+        target_id=instance.following_id,
+        text=f"{_actor_name(instance.follower)} empezó a seguirte.",
+    )
+
+
+@receiver(post_delete, sender=Follow)
+def retire_follow(sender, instance, **kwargs):
     _retire(instance, kwargs.get("origin"))
 
 

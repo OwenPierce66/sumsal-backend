@@ -211,6 +211,8 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
             queryset = queryset.filter(favorited_by__user=request_user)
     if favorite_users_only in ["true", "1", "True", True] and request_user and request_user.is_authenticated:
         queryset = queryset.filter(user__profile_favorites_received__user=request_user).distinct()
+    if params.get("followed_users_only") in ["true", "1", "True", True] and request_user and request_user.is_authenticated:
+        queryset = queryset.filter(user__follower_relationships__follower=request_user).distinct()
     if verified_users_only in ["true", "1", "True", True]:
         queryset = queryset.filter(user__profile__is_verified=True)
     if recommended_users_only in ["true", "1", "True", True]:
@@ -375,8 +377,9 @@ class UserMeView(APIView):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def user_social_stats(request, user_id):
-    """Contadores de perfiles favoritos (lo que antes era "seguir").
+    """Contadores sociales de un perfil: seguir y favoritos.
 
+    - followers_count / following_count / is_following: relacion Seguir.
     - favorited_by_count: cuántas personas tienen este perfil en favoritos.
     - favorites_count: a cuántos perfiles tiene en favoritos; solo visible para el
       dueño o si `favorite_profiles_public`; si no, es None.
@@ -387,6 +390,12 @@ def user_social_stats(request, user_id):
     profile = getattr(target, "profile", None)
     favorites_visible = is_owner or bool(getattr(profile, "favorite_profiles_public", False))
     data = {
+        "followers_count": ms.Follow.objects.filter(following=target).count(),
+        "following_count": ms.Follow.objects.filter(follower=target).count(),
+        "is_following": (
+            not is_owner
+            and ms.Follow.objects.filter(follower=request.user, following=target).exists()
+        ),
         "favorited_by_count": ms.pFavorito.objects.filter(perfil=target).count(),
         "favorites_count": (
             ms.pFavorito.objects.filter(user=target).count() if favorites_visible else None
@@ -406,6 +415,61 @@ def user_social_stats(request, user_id):
             "is_recommended": bool(getattr(profile, "is_recommended", False)),
         }
     return Response(data)
+
+
+@api_view(["POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def toggle_user_follow(request, user_id):
+    """POST sigue, DELETE deja de seguir (idempotentes).
+
+    Dejar de seguir quita tambien el favorito y el anclaje (ver signals.py)."""
+    target = get_object_or_404(User, id=user_id)
+    if request.user.id == target.id:
+        return Response(
+            {"detail": "No puedes seguir tu propia cuenta."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if request.method == "POST":
+        ms.Follow.objects.get_or_create(follower=request.user, following=target)
+        is_following = True
+    else:
+        ms.Follow.objects.filter(follower=request.user, following=target).delete()
+        is_following = False
+    return Response({
+        "is_following": is_following,
+        "is_favorited": ms.pFavorito.objects.filter(user=request.user, perfil=target).exists(),
+        "followers_count": ms.Follow.objects.filter(following=target).count(),
+        "following_count": ms.Follow.objects.filter(follower=target).count(),
+    })
+
+
+FOLLOW_LIST_LIMIT = 200
+
+
+def _follow_list(request, user_id, *, followers):
+    target = get_object_or_404(User, id=user_id)
+    if followers:
+        relations = ms.Follow.objects.filter(following=target).select_related("follower__profile")
+        users = [relation.follower for relation in relations.order_by("-created_at")[:FOLLOW_LIST_LIMIT]]
+    else:
+        relations = ms.Follow.objects.filter(follower=target).select_related("following__profile")
+        users = [relation.following for relation in relations.order_by("-created_at")[:FOLLOW_LIST_LIMIT]]
+    return Response({
+        "count": relations.count(),
+        "users": SimpleUserSerializer(users, many=True, context={"request": request}).data,
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_followers(request, user_id):
+    return _follow_list(request, user_id, followers=True)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_following(request, user_id):
+    return _follow_list(request, user_id, followers=False)
 
 
 RECOMMENDATIONS_LIST_LIMIT = 50
@@ -1511,6 +1575,12 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 
         if favorite_users_only in ['true', '1', 'True', True]:
             qs = qs.filter(Q(shared_by__profile_favorites_received__user=self.request.user) | Q(task__user__profile_favorites_received__user=self.request.user)).distinct()
+
+        if self.request.query_params.get("followed_users_only") in ['true', '1', 'True', True]:
+            qs = qs.filter(
+                Q(shared_by__follower_relationships__follower=self.request.user)
+                | Q(task__user__follower_relationships__follower=self.request.user)
+            ).distinct()
 
         if verified_users_only in ['true', '1', 'True', True]:
             qs = qs.filter(shared_by__profile__is_verified=True) | qs.filter(task__user__profile__is_verified=True)
