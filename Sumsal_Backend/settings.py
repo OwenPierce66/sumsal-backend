@@ -165,6 +165,7 @@ REST_FRAMEWORK = {
         "logout":   "20/hour",
         # Traductor de mensajes: tope diario por usuario (controla el gasto del proveedor)
         "translate": "300/day",
+        "translate_preview": "1500/day",
 
         # ── Endpoints autenticados ─────────────────────────────────────────────
         "user_me":   "70/hour",

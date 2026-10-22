@@ -23,4 +23,5 @@ urlpatterns = [
     path('messages/<int:message_id>/translate/', translation_views.translate_message, name='translate-message'),
     path('group_messages/<int:message_id>/translate/', translation_views.translate_group_message, name='translate-group-message'),
     path('translation/language/', translation_views.translation_language, name='translation-language'),
+    path('translation/preview/', translation_views.translate_preview, name='translation-preview'),
 ]

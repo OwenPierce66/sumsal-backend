@@ -13,6 +13,23 @@ from .models import (
     GroupMessage,
     GroupMessageAttachment,
 )
+from .translation_views import SENDER_PROVIDER
+
+
+def _sender_translation(message):
+    """Traducción que el autor envió junto al mensaje, o None.
+
+    Recorre `translations.all()` (precargado en las listas) en vez de filtrar en
+    la base, para no hacer una consulta por mensaje.
+    """
+    for translation in message.translations.all():
+        if translation.provider == SENDER_PROVIDER:
+            return {
+                "text": translation.text,
+                "lang": translation.target_lang,
+                "source_lang": translation.source_lang,
+            }
+    return None
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -140,6 +157,8 @@ class MessageSerializer(serializers.ModelSerializer):
     # campos top-level por compat con el front: msg.sender_image / msg.user_image
     sender_image = serializers.SerializerMethodField()
     user_image = serializers.SerializerMethodField()
+    # traducción que el autor envió junto al mensaje (o None)
+    sent_translation = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
@@ -158,6 +177,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "attachments",
             "sender_image",
             "user_image",
+            "sent_translation",
         ]
 
     def get_replied_to(self, obj):
@@ -191,6 +211,9 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_user_image(self, obj):
         return self._get_sender_image_url(obj)
+
+    def get_sent_translation(self, obj):
+        return _sender_translation(obj)
 
 
 class GroupSerializer(serializers.ModelSerializer):
@@ -244,6 +267,7 @@ class GroupMessageSerializer(serializers.ModelSerializer):
     replied_to = serializers.SerializerMethodField()
     sender_image = serializers.SerializerMethodField()
     user_image = serializers.SerializerMethodField()
+    sent_translation = serializers.SerializerMethodField()
 
     class Meta:
         model = GroupMessage
@@ -259,6 +283,7 @@ class GroupMessageSerializer(serializers.ModelSerializer):
             "attachments",
             "sender_image",
             "user_image",
+            "sent_translation",
         ]
 
     def get_replied_to(self, obj):
@@ -290,3 +315,6 @@ class GroupMessageSerializer(serializers.ModelSerializer):
 
     def get_user_image(self, obj):
         return self._get_sender_image_url(obj)
+
+    def get_sent_translation(self, obj):
+        return _sender_translation(obj)

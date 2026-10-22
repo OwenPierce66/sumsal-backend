@@ -1,5 +1,8 @@
 """Vistas del traductor de mensajes (directos y de grupo)."""
+import hashlib
+
 from django.conf import settings
+from django.core.cache import cache
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
@@ -153,3 +156,89 @@ def translation_language(request):
         "supported": [{"code": code, "name": name} for code, name in SUPPORTED_LANGUAGES.items()],
         "configured": configured,
     })
+
+
+# --- Traducción en vivo al escribir (estilo web: ves la traducción mientras escribes) ---
+
+SENDER_PROVIDER = "sender"
+PREVIEW_DEFAULT_TARGET = "en"
+PREVIEW_CACHE_SECONDS = 60 * 60
+
+
+class TranslatePreviewThrottle(UserRateThrottle):
+    """Tope diario aparte: cada pausa al escribir es una consulta."""
+    scope = "translate_preview"
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([TranslatePreviewThrottle])
+def translate_preview(request):
+    """Traduce un borrador sin guardar nada. Body: {text, target?, source?}."""
+    text = str(request.data.get("text") or "").strip()
+    if not text:
+        return Response(
+            {"detail": "No hay texto para traducir."}, status=status.HTTP_400_BAD_REQUEST
+        )
+    if len(text) > settings.TRANSLATION_MAX_CHARS:
+        return Response(
+            {"detail": "El texto es demasiado largo para traducirlo."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    target = normalize_language(request.data.get("target"), default=PREVIEW_DEFAULT_TARGET)
+    raw_source = str(request.data.get("source") or "").strip().lower()
+    source = raw_source if raw_source in SUPPORTED_LANGUAGES else None
+
+    # Mismo borrador + mismo par de idiomas = misma respuesta, sin gastar proveedor.
+    digest = hashlib.sha1(f"{source}|{target}|{text}".encode("utf-8")).hexdigest()
+    cache_key = f"translate-preview:{digest}"
+    payload = cache.get(cache_key)
+    if payload is None:
+        try:
+            translated, detected, _provider = translate_text(text, target, source)
+        except TranslationNotConfigured:
+            return Response(
+                {"detail": "El traductor todavía no está configurado."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except TranslationError:
+            return Response(
+                {"detail": "No se pudo traducir en este momento. Inténtalo de nuevo."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        source_lang = detected or source or ""
+        payload = {
+            "text": translated,
+            "source_lang": source_lang,
+            "target_lang": target,
+            "same_language": bool(source_lang) and source_lang == target,
+        }
+        cache.set(cache_key, payload, PREVIEW_CACHE_SECONDS)
+    return Response(payload)
+
+
+def save_sender_translation(request, message, field):
+    """Guarda la traducción que quien escribe vio en vivo y envió con su mensaje.
+
+    Va en `MessageTranslation` con proveedor `sender`; así quien lee solo toca el
+    mensaje para verla, sin otra consulta al proveedor. `field` es `"message"` o
+    `"group_message"`. Si falta algo o es inválido, el mensaje se envía igual.
+    """
+    text = str(request.data.get("translation_text") or "").strip()
+    lang = str(request.data.get("translation_lang") or "").strip().lower()
+    if not text or lang not in SUPPORTED_LANGUAGES:
+        return None
+    if len(text) > settings.TRANSLATION_MAX_CHARS:
+        return None
+    source = str(request.data.get("translation_source") or "").strip().lower()
+    translation, _ = MessageTranslation.objects.get_or_create(
+        **{field: message},
+        target_lang=lang,
+        defaults={
+            "source_lang": source if source in SUPPORTED_LANGUAGES else "",
+            "text": text,
+            "provider": SENDER_PROVIDER,
+        },
+    )
+    return translation

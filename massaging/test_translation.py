@@ -266,3 +266,142 @@ class ProviderTests(SimpleTestCase):
         from .translation import get_provider
         with self.assertRaises(TranslationNotConfigured):
             get_provider()
+
+
+class TranslationPreviewTests(TestCase):
+    """Traducción en vivo al escribir (sin guardar nada)."""
+
+    def setUp(self):
+        self.user = make_user("p_user")
+        self.url = reverse("translation-preview")
+
+    def test_requires_authentication(self):
+        self.assertEqual(APIClient().post(self.url, {"text": "Hola"}, format="json").status_code, 401)
+
+    def test_translates_to_english_by_default_and_passes_source(self):
+        with mock.patch(PATCH_TARGET, return_value=("Hello preview one", "es", "deepl")) as provider:
+            res = client_for(self.user).post(
+                self.url, {"text": "Hola vista previa uno", "source": "es"}, format="json"
+            )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["text"], "Hello preview one")
+        self.assertEqual(res.data["target_lang"], "en")
+        self.assertEqual(res.data["source_lang"], "es")
+        provider.assert_called_once_with("Hola vista previa uno", "en", "es")
+        # No guarda nada: es solo un borrador.
+        self.assertEqual(MessageTranslation.objects.count(), 0)
+
+    def test_same_draft_is_served_from_cache(self):
+        body = {"text": "Texto repetido de prueba", "target": "en", "source": "es"}
+        with mock.patch(PATCH_TARGET, return_value=("Repeated test text", "es", "deepl")) as provider:
+            client_for(self.user).post(self.url, body, format="json")
+            again = client_for(self.user).post(self.url, body, format="json")
+        self.assertEqual(again.data["text"], "Repeated test text")
+        self.assertEqual(provider.call_count, 1)
+
+    def test_empty_and_too_long_text_are_rejected(self):
+        with mock.patch(PATCH_TARGET) as provider:
+            empty = client_for(self.user).post(self.url, {"text": "   "}, format="json")
+            with override_settings(TRANSLATION_MAX_CHARS=3):
+                long = client_for(self.user).post(self.url, {"text": "demasiado largo"}, format="json")
+        self.assertEqual(empty.status_code, 400)
+        self.assertEqual(long.status_code, 400)
+        provider.assert_not_called()
+
+    def test_unknown_source_is_ignored(self):
+        with mock.patch(PATCH_TARGET, return_value=("Hello unknown", "es", "deepl")) as provider:
+            client_for(self.user).post(
+                self.url, {"text": "Hola desconocido", "source": "zz"}, format="json"
+            )
+        provider.assert_called_once_with("Hola desconocido", "en", None)
+
+    def test_provider_errors(self):
+        with mock.patch(PATCH_TARGET, side_effect=TranslationNotConfigured("x")):
+            self.assertEqual(
+                client_for(self.user).post(self.url, {"text": "Hola error uno"}, format="json").status_code, 503
+            )
+        with mock.patch(PATCH_TARGET, side_effect=TranslationError("x")):
+            self.assertEqual(
+                client_for(self.user).post(self.url, {"text": "Hola error dos"}, format="json").status_code, 502
+            )
+
+
+class SentTranslationTests(TestCase):
+    """La traducción que el autor ve al escribir viaja con su mensaje."""
+
+    def setUp(self):
+        self.sender = make_user("s_sender")
+        self.receiver = make_user("s_receiver")
+        self.outsider = make_user("s_outsider")
+
+    def _send_direct(self, extra=None):
+        data = {"receiver": self.receiver.id, "content": "Hola amigo"}
+        data.update(extra or {})
+        return client_for(self.sender).post(reverse("message-list"), data, format="multipart")
+
+    def test_direct_message_carries_the_translation(self):
+        res = self._send_direct(
+            {"translation_text": "Hello friend", "translation_lang": "en", "translation_source": "es"}
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(
+            res.data["sent_translation"],
+            {"text": "Hello friend", "lang": "en", "source_lang": "es"},
+        )
+        stored = MessageTranslation.objects.get()
+        self.assertEqual(stored.provider, "sender")
+
+        # El receptor la ve al listar la conversación, sin consultar al proveedor.
+        with mock.patch(PATCH_TARGET) as provider:
+            listing = client_for(self.receiver).get(
+                reverse("message-list"), {"user_id": self.sender.id}
+            )
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.data[0]["sent_translation"]["text"], "Hello friend")
+        provider.assert_not_called()
+
+    def test_message_without_translation_has_none(self):
+        res = self._send_direct()
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.data["sent_translation"])
+        self.assertEqual(MessageTranslation.objects.count(), 0)
+
+    def test_invalid_translation_data_is_ignored_but_message_is_sent(self):
+        res = self._send_direct({"translation_text": "Hello", "translation_lang": "zz"})
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.data["sent_translation"])
+        res = self._send_direct({"translation_text": "   ", "translation_lang": "en"})
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(MessageTranslation.objects.count(), 0)
+
+    @override_settings(TRANSLATION_MAX_CHARS=5)
+    def test_too_long_translation_is_ignored(self):
+        res = self._send_direct({"translation_text": "Hello friend", "translation_lang": "en"})
+        self.assertEqual(res.status_code, 201)
+        self.assertIsNone(res.data["sent_translation"])
+
+    def test_tapping_the_message_reuses_the_sent_translation(self):
+        sent = self._send_direct({"translation_text": "Hello friend", "translation_lang": "en"})
+        url = reverse("translate-message", kwargs={"message_id": sent.data["id"]})
+        with mock.patch(PATCH_TARGET) as provider:
+            res = client_for(self.receiver).post(url, {"target": "en"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["text"], "Hello friend")
+        self.assertTrue(res.data["cached"])
+        provider.assert_not_called()
+
+    def test_group_message_carries_the_translation(self):
+        group = Group.objects.create(name="Grupo", created_by=self.sender)
+        GroupMembership.objects.create(group=group, user=self.sender)
+        GroupMembership.objects.create(group=group, user=self.receiver)
+        res = client_for(self.sender).post(
+            reverse("send-group-message", kwargs={"group_id": group.id}),
+            {"content": "Hola grupo", "translation_text": "Hello group", "translation_lang": "en"},
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["sent_translation"]["text"], "Hello group")
+        listing = client_for(self.receiver).get(
+            reverse("group-messages", kwargs={"group_id": group.id})
+        )
+        self.assertEqual(listing.data[0]["sent_translation"]["lang"], "en")

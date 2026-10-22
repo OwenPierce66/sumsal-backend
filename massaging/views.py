@@ -17,6 +17,7 @@ User = get_user_model()
 import logging
 
 from api.upload_validation import validate_chat_uploads
+from .translation_views import save_sender_translation
 
 from .models import (
     Message,
@@ -358,7 +359,7 @@ def message_list(request):
             messages = Message.objects.filter(
                 Q(sender=request.user, receiver=other_user)
                 | Q(sender=other_user, receiver=request.user)
-            ).order_by('-timestamp', '-id')
+            ).prefetch_related('translations').order_by('-timestamp', '-id')
 
             Message.objects.filter(
                 sender=other_user,
@@ -435,6 +436,9 @@ def message_list(request):
                 is_image=ct.startswith('image/'),
                 is_video=ct.startswith('video/'),
             )
+
+        # 6b) Traducción en vivo enviada junto con el mensaje (opcional)
+        save_sender_translation(request, message, "message")
 
         # 7) Serializar para salida
         out_serializer = MessageSerializer(
@@ -609,7 +613,7 @@ def group_messages(request, group_id):
     messages = GroupMessage.objects.filter(
         group=group,
         timestamp__lte=opened_at,
-    ).order_by('-timestamp', '-id')
+    ).prefetch_related('translations').order_by('-timestamp', '-id')
     # Paginación opcional: sin `page` se devuelve el historial completo
     # (compatibilidad con clientes antiguos).
     if 'page' in request.query_params:
@@ -669,6 +673,8 @@ def send_group_message(request, group_id):
             is_image=(getattr(f, 'content_type', '') or '').startswith('image/'),
             is_video=(getattr(f, 'content_type', '') or '').startswith('video/'),
         )
+
+    save_sender_translation(request, message, "group_message")
 
     serializer = GroupMessageSerializer(message, context={'request': request})
     return Response(serializer.data, status=status.HTTP_201_CREATED)
