@@ -459,6 +459,7 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
     
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
+    aportacion_info = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.NewPeticionCommentPost
@@ -468,6 +469,7 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
             "parent",
             "post",
             "aportacion",
+            "aportacion_info",
             "text",
             "children",
             "likes_count",
@@ -486,6 +488,55 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             return related_has_user(obj, "likes", request.user)
         return False
+
+    def get_aportacion_info(self, obj):
+        """Datos mínimos de la aportación favorita adjunta (None si no hay)."""
+        task = obj.aportacion
+        if task is None:
+            return None
+        request = self.context.get("request")
+        owner = task.user
+        return {
+            "id": str(task.id),
+            "title": task.title,
+            "image": file_to_abs_url(task.image, request),
+            "username": (owner.username if owner else None) or task.username or None,
+        }
+
+    def validate_aportacion(self, value):
+        """Solo se puede adjuntar una aportación que el autor tiene en favoritos.
+
+        Igual que en la web antigua ("Seleccionar Aportación Favorita"). Si el
+        comentario ya tenía esa aportación (edición) no se vuelve a exigir, para
+        no romper comentarios cuyo autor quitó luego el favorito.
+        """
+        if value is None:
+            return value
+        if self.instance is not None and self.instance.aportacion_id == value.pk:
+            return value
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Debes iniciar sesión.")
+        if value.is_story and not value.story_saved:
+            raise serializers.ValidationError("Esta aportación no está disponible.")
+        if not ms.Favorito.objects.filter(user=user, task=value).exists():
+            raise serializers.ValidationError(
+                "Solo puedes adjuntar una de tus aportaciones favoritas."
+            )
+        return value
+
+    def validate(self, attrs):
+        # En la web solo los comentarios principales llevaban aportación.
+        if attrs.get("aportacion") is not None:
+            parent = attrs.get("parent")
+            if parent is None and self.instance is not None:
+                parent = self.instance.parent
+            if parent is not None:
+                raise serializers.ValidationError(
+                    {"aportacion": "Las respuestas no pueden adjuntar una aportación."}
+                )
+        return attrs
     
 class SubTaskSerializer(serializers.ModelSerializer):
     class Meta:

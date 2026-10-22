@@ -1242,6 +1242,8 @@ class TaskCommentListCreateView(generics.ListCreateAPIView):
         ).select_related(
             "created_by",
             "created_by__profile",
+            "aportacion",
+            "aportacion__user",
         ).prefetch_related(
             "replies",
             "replies__created_by",
