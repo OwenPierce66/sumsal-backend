@@ -1,0 +1,268 @@
+"""Tests del traductor de mensajes (directos y de grupo)."""
+from unittest import mock
+
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
+from rest_framework.test import APIClient
+
+from api.models import Profile
+
+from .models import Group, GroupMembership, GroupMessage, Message, MessageTranslation
+from .translation import (
+    DeepLProvider,
+    GoogleProvider,
+    TranslationError,
+    TranslationNotConfigured,
+    normalize_language,
+)
+
+User = get_user_model()
+PATCH_TARGET = "massaging.translation_views.translate_text"
+
+
+def make_user(name):
+    return User.objects.create_user(
+        username=name, email=f"{name}@example.com", password="test-password"
+    )
+
+
+def client_for(user):
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
+class DirectMessageTranslationTests(TestCase):
+    def setUp(self):
+        self.sender = make_user("t_sender")
+        self.receiver = make_user("t_receiver")
+        self.outsider = make_user("t_outsider")
+        self.message = Message.objects.create(
+            sender=self.sender, receiver=self.receiver, content="Hello world"
+        )
+        self.url = reverse("translate-message", kwargs={"message_id": self.message.id})
+
+    def test_translates_to_the_users_language_and_caches(self):
+        with mock.patch(PATCH_TARGET, return_value=("Hola mundo", "en", "deepl")) as provider:
+            first = client_for(self.receiver).post(self.url)
+            second = client_for(self.receiver).post(self.url)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.data["text"], "Hola mundo")
+        self.assertEqual(first.data["source_lang"], "en")
+        self.assertEqual(first.data["target_lang"], "es")
+        self.assertFalse(first.data["cached"])
+        self.assertTrue(second.data["cached"])
+        # El proveedor (y su costo) solo se usa una vez por mensaje e idioma.
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(MessageTranslation.objects.count(), 1)
+        # El original no se toca.
+        self.message.refresh_from_db()
+        self.assertEqual(self.message.content, "Hello world")
+
+    def test_uses_profile_language_and_explicit_target(self):
+        profile, _ = Profile.objects.get_or_create(user=self.receiver)
+        profile.language = "fr"
+        profile.save()
+        with mock.patch(PATCH_TARGET, return_value=("Bonjour le monde", "en", "deepl")) as provider:
+            res = client_for(self.receiver).post(self.url)
+            self.assertEqual(res.data["target_lang"], "fr")
+            provider.assert_called_once_with("Hello world", "fr")
+            # Pedir otro idioma explícitamente crea otra traducción.
+            other = client_for(self.receiver).post(self.url, {"target": "de"}, format="json")
+        self.assertEqual(other.data["target_lang"], "de")
+        self.assertEqual(MessageTranslation.objects.count(), 2)
+
+    def test_same_language_is_flagged(self):
+        with mock.patch(PATCH_TARGET, return_value=("Hello world", "es", "deepl")):
+            res = client_for(self.receiver).post(self.url, {"target": "es"}, format="json")
+        self.assertTrue(res.data["same_language"])
+
+    def test_sender_can_translate_own_message(self):
+        with mock.patch(PATCH_TARGET, return_value=("Hola mundo", "en", "deepl")):
+            self.assertEqual(client_for(self.sender).post(self.url).status_code, 200)
+
+    def test_editing_the_message_discards_stored_translations(self):
+        with mock.patch(PATCH_TARGET, return_value=("Hola mundo", "en", "deepl")):
+            client_for(self.receiver).post(self.url)
+        self.assertEqual(MessageTranslation.objects.count(), 1)
+        edit_url = reverse("update-message", kwargs={"message_id": self.message.id})
+        res = client_for(self.sender).patch(edit_url, {"content": "Good morning"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(MessageTranslation.objects.count(), 0)
+        with mock.patch(PATCH_TARGET, return_value=("Buenos días", "en", "deepl")):
+            again = client_for(self.receiver).post(self.url)
+        self.assertEqual(again.data["text"], "Buenos días")
+        self.assertFalse(again.data["cached"])
+
+    def test_outsider_gets_404(self):
+        with mock.patch(PATCH_TARGET) as provider:
+            res = client_for(self.outsider).post(self.url)
+        self.assertEqual(res.status_code, 404)
+        provider.assert_not_called()
+
+    def test_requires_authentication(self):
+        self.assertEqual(APIClient().post(self.url).status_code, 401)
+
+    def test_message_without_text_is_rejected(self):
+        empty = Message.objects.create(sender=self.sender, receiver=self.receiver, content="  ")
+        url = reverse("translate-message", kwargs={"message_id": empty.id})
+        with mock.patch(PATCH_TARGET) as provider:
+            res = client_for(self.receiver).post(url)
+        self.assertEqual(res.status_code, 400)
+        provider.assert_not_called()
+
+    def test_shared_content_prefix_is_not_translated(self):
+        shared = Message.objects.create(
+            sender=self.sender,
+            receiver=self.receiver,
+            content="↪ Publicación compartida: Mi tarea [task:7]\nHello friend",
+        )
+        url = reverse("translate-message", kwargs={"message_id": shared.id})
+        with mock.patch(PATCH_TARGET, return_value=("Hola amigo", "en", "deepl")) as provider:
+            res = client_for(self.receiver).post(url)
+        self.assertEqual(res.status_code, 200)
+        provider.assert_called_once_with("Hello friend", "es")
+
+    def test_shared_content_without_body_is_rejected(self):
+        shared = Message.objects.create(
+            sender=self.sender,
+            receiver=self.receiver,
+            content="↪ Respuesta a tu historia: [story:3]",
+        )
+        url = reverse("translate-message", kwargs={"message_id": shared.id})
+        with mock.patch(PATCH_TARGET) as provider:
+            res = client_for(self.receiver).post(url)
+        self.assertEqual(res.status_code, 400)
+        provider.assert_not_called()
+
+    @override_settings(TRANSLATION_MAX_CHARS=5)
+    def test_too_long_message_is_rejected(self):
+        with mock.patch(PATCH_TARGET) as provider:
+            res = client_for(self.receiver).post(self.url)
+        self.assertEqual(res.status_code, 400)
+        provider.assert_not_called()
+
+    def test_provider_not_configured_returns_503(self):
+        with mock.patch(PATCH_TARGET, side_effect=TranslationNotConfigured("x")):
+            res = client_for(self.receiver).post(self.url)
+        self.assertEqual(res.status_code, 503)
+        self.assertEqual(MessageTranslation.objects.count(), 0)
+
+    def test_provider_failure_returns_502_and_stores_nothing(self):
+        with mock.patch(PATCH_TARGET, side_effect=TranslationError("boom")):
+            res = client_for(self.receiver).post(self.url)
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(MessageTranslation.objects.count(), 0)
+
+
+class GroupMessageTranslationTests(TestCase):
+    def setUp(self):
+        self.member = make_user("g_member")
+        self.outsider = make_user("g_outsider")
+        self.group = Group.objects.create(name="grupo", created_by=self.member)
+        GroupMembership.objects.create(group=self.group, user=self.member)
+        self.message = GroupMessage.objects.create(
+            group=self.group, sender=self.member, content="Good morning"
+        )
+        self.url = reverse("translate-group-message", kwargs={"message_id": self.message.id})
+
+    def test_member_can_translate(self):
+        with mock.patch(PATCH_TARGET, return_value=("Buenos días", "en", "deepl")):
+            res = client_for(self.member).post(self.url)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["text"], "Buenos días")
+        self.assertEqual(MessageTranslation.objects.filter(group_message=self.message).count(), 1)
+
+    def test_non_member_gets_404(self):
+        with mock.patch(PATCH_TARGET) as provider:
+            res = client_for(self.outsider).post(self.url)
+        self.assertEqual(res.status_code, 404)
+        provider.assert_not_called()
+
+
+class TranslationLanguageTests(TestCase):
+    def setUp(self):
+        self.user = make_user("l_user")
+        self.client = client_for(self.user)
+        self.url = reverse("translation-language")
+
+    def test_defaults_to_spanish_and_lists_languages(self):
+        data = self.client.get(self.url).data
+        self.assertEqual(data["language"], "es")
+        self.assertIn("en", {item["code"] for item in data["supported"]})
+
+    def test_can_change_language(self):
+        res = self.client.patch(self.url, {"language": "pt"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["language"], "pt")
+        self.assertEqual(Profile.objects.get(user=self.user).language, "pt")
+
+    def test_rejects_unknown_language(self):
+        res = self.client.patch(self.url, {"language": "xx"}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    @override_settings(TRANSLATION_PROVIDER="deepl", DEEPL_API_KEY="")
+    def test_reports_when_translator_is_not_configured(self):
+        self.assertFalse(self.client.get(self.url).data["configured"])
+
+    @override_settings(TRANSLATION_PROVIDER="deepl", DEEPL_API_KEY="k:fx")
+    def test_reports_when_translator_is_configured(self):
+        self.assertTrue(self.client.get(self.url).data["configured"])
+
+
+def fake_response(status_code=200, payload=None):
+    response = mock.Mock()
+    response.status_code = status_code
+    response.json.return_value = payload or {}
+    return response
+
+
+class ProviderTests(SimpleTestCase):
+    def test_normalize_language(self):
+        self.assertEqual(normalize_language("EN-us"), "en")
+        self.assertEqual(normalize_language("pt_BR"), "pt")
+        self.assertEqual(normalize_language("xx"), "es")
+        self.assertEqual(normalize_language(None, default=""), "")
+
+    def test_deepl_requires_key(self):
+        with self.assertRaises(TranslationNotConfigured):
+            DeepLProvider("")
+
+    def test_deepl_free_key_uses_free_host_and_regional_target(self):
+        payload = {"translations": [{"text": "Hello", "detected_source_language": "ES"}]}
+        with mock.patch("massaging.translation.requests.post", return_value=fake_response(200, payload)) as post:
+            text, detected = DeepLProvider("abc:fx").translate("Hola", "en")
+        self.assertEqual((text, detected), ("Hello", "es"))
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "https://api-free.deepl.com/v2/translate")
+        self.assertEqual(kwargs["json"]["target_lang"], "EN-US")
+        self.assertEqual(kwargs["headers"]["Authorization"], "DeepL-Auth-Key abc:fx")
+
+    def test_deepl_paid_key_uses_paid_host(self):
+        self.assertTrue(DeepLProvider("abc").url.startswith("https://api.deepl.com/"))
+
+    def test_deepl_quota_exhausted(self):
+        with mock.patch("massaging.translation.requests.post", return_value=fake_response(456)):
+            with self.assertRaises(TranslationError):
+                DeepLProvider("abc:fx").translate("Hola", "en")
+
+    def test_deepl_unexpected_payload(self):
+        with mock.patch("massaging.translation.requests.post", return_value=fake_response(200, {})):
+            with self.assertRaises(TranslationError):
+                DeepLProvider("abc:fx").translate("Hola", "en")
+
+    def test_google_parses_response(self):
+        payload = {"data": {"translations": [{"translatedText": "Hello", "detectedSourceLanguage": "es"}]}}
+        with mock.patch("massaging.translation.requests.post", return_value=fake_response(200, payload)):
+            self.assertEqual(GoogleProvider("key").translate("Hola", "en"), ("Hello", "es"))
+
+    def test_google_requires_key(self):
+        with self.assertRaises(TranslationNotConfigured):
+            GoogleProvider("")
+
+    @override_settings(TRANSLATION_PROVIDER="nope")
+    def test_unknown_provider(self):
+        from .translation import get_provider
+        with self.assertRaises(TranslationNotConfigured):
+            get_provider()

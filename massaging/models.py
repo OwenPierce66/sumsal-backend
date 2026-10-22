@@ -173,3 +173,42 @@ class GroupMessageAttachment(models.Model):
 
     def __str__(self):
         return f'Attachment {self.id} of group message {self.message_id}'
+
+class MessageTranslation(models.Model):
+    """Traducción guardada de un mensaje (directo o de grupo) a un idioma.
+
+    Sirve de caché: el mismo mensaje en el mismo idioma se paga una sola vez, y
+    varias personas pueden leerlo cada una en su idioma. El original no se toca.
+    """
+    message = models.ForeignKey(
+        Message, null=True, blank=True, related_name='translations', on_delete=models.CASCADE
+    )
+    group_message = models.ForeignKey(
+        GroupMessage, null=True, blank=True, related_name='translations', on_delete=models.CASCADE
+    )
+    target_lang = models.CharField(max_length=10)
+    source_lang = models.CharField(max_length=10, blank=True, default='')
+    text = models.TextField()
+    provider = models.CharField(max_length=20, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['message', 'target_lang'],
+                condition=models.Q(message__isnull=False),
+                name='unique_message_translation',
+            ),
+            models.UniqueConstraint(
+                fields=['group_message', 'target_lang'],
+                condition=models.Q(group_message__isnull=False),
+                name='unique_group_message_translation',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(message__isnull=False, group_message__isnull=True)
+                    | models.Q(message__isnull=True, group_message__isnull=False)
+                ),
+                name='translation_has_one_message',
+            ),
+        ]

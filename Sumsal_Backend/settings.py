@@ -163,6 +163,8 @@ REST_FRAMEWORK = {
         "refresh":  "60/hour",
         # Logout: 20/hora — uso legítimo máximo
         "logout":   "20/hour",
+        # Traductor de mensajes: tope diario por usuario (controla el gasto del proveedor)
+        "translate": "300/day",
 
         # ── Endpoints autenticados ─────────────────────────────────────────────
         "user_me":   "70/hour",
@@ -467,6 +469,14 @@ if DEBUG:
         "auth": "100/minute",
     })
 
+
+# Traductor de mensajes directos y de grupo (ver massaging/translation.py).
+# TRANSLATION_PROVIDER: "deepl" (por defecto) o "google". Las claves van en .env.
+TRANSLATION_PROVIDER = os.getenv("TRANSLATION_PROVIDER", "deepl")
+DEEPL_API_KEY = os.getenv("DEEPL_API_KEY", "")
+GOOGLE_TRANSLATE_API_KEY = os.getenv("GOOGLE_TRANSLATE_API_KEY", "")
+# Máximo de caracteres por mensaje a traducir (el plan gratuito de DeepL da 500.000/mes).
+TRANSLATION_MAX_CHARS = int(os.getenv("TRANSLATION_MAX_CHARS", "5000"))
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field

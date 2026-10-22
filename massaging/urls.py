@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import *
+from . import translation_views
 
 urlpatterns = [
     path('users/', user_list, name='user-list'),
@@ -19,4 +20,7 @@ urlpatterns = [
     path('messages/<int:message_id>/', update_message, name='update-message'),
     path('group_messages/<int:message_id>/delete/', delete_group_message, name='delete-group-message'),
     path('group_messages/<int:message_id>/', update_group_message, name='update-group-message'),
+    path('messages/<int:message_id>/translate/', translation_views.translate_message, name='translate-message'),
+    path('group_messages/<int:message_id>/translate/', translation_views.translate_group_message, name='translate-group-message'),
+    path('translation/language/', translation_views.translation_language, name='translation-language'),
 ]

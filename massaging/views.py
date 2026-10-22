@@ -91,6 +91,7 @@ def update_message(request, message_id):
         return Response({'error': 'Solo puedes editar tus propios mensajes.'}, status=status.HTTP_403_FORBIDDEN)
     if 'content' in request.data:
         message.content = request.data.get('content', '').strip()
+        message.translations.all().delete()
     message.save(update_fields=['content'])
     return Response(MessageSerializer(message, context={'request': request}).data)
 
@@ -122,6 +123,7 @@ def update_group_message(request, message_id):
         )
     if 'content' in request.data:
         message.content = request.data.get('content', '').strip()
+        message.translations.all().delete()
     message.save(update_fields=['content'])
     return Response(GroupMessageSerializer(message, context={'request': request}).data)
 

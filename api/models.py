@@ -114,6 +114,10 @@ class Profile(TimeStampedModel):
         _("show recommendations"), default=True,
         help_text=_("Si es falso, otros no ven las recomendaciones que recibió ni las que dio."),
     )
+    language = models.CharField(
+        _("language"), max_length=10, default="es",
+        help_text=_("Idioma al que el traductor de mensajes traduce para esta persona."),
+    )
 
     class Meta:
         verbose_name = _("profile")
