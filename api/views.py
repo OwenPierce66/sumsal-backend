@@ -472,6 +472,29 @@ def user_following(request, user_id):
     return _follow_list(request, user_id, followers=False)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_favorited_by(request, user_id):
+    """Quién tiene a este perfil en favoritos.
+
+    El dueño ve a todos. El resto solo ve a quienes mantienen públicos sus
+    perfiles favoritos (`favorite_profiles_public`); `count` es el total real y
+    `visible_count` cuántos se pueden listar.
+    """
+    target = get_object_or_404(User, id=user_id)
+    is_owner = request.user.id == target.id
+    relations = ms.pFavorito.objects.filter(perfil=target).select_related("user__profile")
+    total = relations.count()
+    if not is_owner:
+        relations = relations.filter(user__profile__favorite_profiles_public=True)
+    users = [item.user for item in relations.order_by("-created_at")[:FOLLOW_LIST_LIMIT]]
+    return Response({
+        "count": total,
+        "visible_count": total if is_owner else relations.count(),
+        "users": SimpleUserSerializer(users, many=True, context={"request": request}).data,
+    })
+
+
 RECOMMENDATIONS_LIST_LIMIT = 50
 
 

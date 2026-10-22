@@ -3,7 +3,7 @@ from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from api.models import pFavorito
+from api.models import Profile, pFavorito
 
 User = get_user_model()
 
@@ -291,3 +291,32 @@ class MyRelationsTests(TestCase):
 
     def test_requires_authentication(self):
         self.assertEqual(APIClient().get(reverse("user-my-relations")).status_code, 401)
+
+
+class FavoritedByTests(TestCase):
+    def setUp(self):
+        self.target = User.objects.create_user(username="t", email="t@example.com", password="x")
+        self.pub = User.objects.create_user(username="pub", email="pub@example.com", password="x")
+        self.priv = User.objects.create_user(username="priv", email="priv@example.com", password="x")
+        self.viewer = User.objects.create_user(username="v", email="v@example.com", password="x")
+        for user, public in ((self.pub, True), (self.priv, False)):
+            profile, _ = Profile.objects.get_or_create(user=user)
+            profile.favorite_profiles_public = public
+            profile.save()
+            pFavorito.objects.create(user=user, perfil=self.target)
+        self.url = reverse("user-favorited-by", kwargs={"user_id": self.target.id})
+
+    def test_owner_sees_everyone(self):
+        client = APIClient()
+        client.force_authenticate(self.target)
+        data = client.get(self.url).data
+        self.assertEqual(data["count"], 2)
+        self.assertEqual({u["username"] for u in data["users"]}, {"pub", "priv"})
+
+    def test_others_only_see_public_favorites(self):
+        client = APIClient()
+        client.force_authenticate(self.viewer)
+        data = client.get(self.url).data
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["visible_count"], 1)
+        self.assertEqual([u["username"] for u in data["users"]], ["pub"])

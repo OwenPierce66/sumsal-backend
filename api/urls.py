@@ -37,6 +37,7 @@ urlpatterns = [
     path('users/<uuid:user_id>/follow/', views.toggle_user_follow, name='user-follow-toggle'),
     path('users/<uuid:user_id>/followers/', views.user_followers, name='user-followers'),
     path('users/<uuid:user_id>/following/', views.user_following, name='user-following'),
+    path('users/<uuid:user_id>/favorited-by/', views.user_favorited_by, name='user-favorited-by'),
     path('users/<uuid:user_id>/recommendations/', views.user_recommendations, name='user-recommendations'),
     path('users/<uuid:user_id>/portadas/', views.obtener_portadas_usuario, name='user-portadas'),
     path('users/<uuid:user_id>/imagen-fija/', views.obtener_imagen_fija_usuario, name='user-imagen-fija'),
