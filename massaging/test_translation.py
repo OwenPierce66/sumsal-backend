@@ -261,6 +261,51 @@ class ProviderTests(SimpleTestCase):
         with self.assertRaises(TranslationNotConfigured):
             GoogleProvider("")
 
+    @staticmethod
+    def gemini_payload(translation="Hello", source_lang="es"):
+        import json as _json
+        body = _json.dumps({"translation": translation, "source_lang": source_lang})
+        return {"candidates": [{"content": {"parts": [{"text": body}]}}]}
+
+    def test_gemini_parses_response_and_sends_key_in_header(self):
+        from .translation import GeminiProvider
+        with mock.patch("massaging.translation.requests.post", return_value=fake_response(200, self.gemini_payload())) as post:
+            result = GeminiProvider("key").translate("Hola", "en")
+        self.assertEqual(result, ("Hello", "es"))
+        args, kwargs = post.call_args
+        self.assertIn("gemini-3.1-flash-lite:generateContent", args[0])
+        self.assertEqual(kwargs["headers"]["x-goog-api-key"], "key")
+        self.assertNotIn("key=", args[0])
+        # El mensaje va como dato del usuario, no dentro de las instrucciones.
+        self.assertEqual(kwargs["json"]["contents"][0]["parts"][0]["text"], "Hola")
+        self.assertNotIn("Hola", kwargs["json"]["systemInstruction"]["parts"][0]["text"])
+
+    def test_gemini_requires_key(self):
+        from .translation import GeminiProvider
+        with self.assertRaises(TranslationNotConfigured):
+            GeminiProvider("")
+
+    def test_gemini_rate_limit_and_bad_payloads(self):
+        from .translation import GeminiProvider
+        bad_json = {"candidates": [{"content": {"parts": [{"text": "no es json"}]}}]}
+        for response in (fake_response(429), fake_response(500), fake_response(200, {}), fake_response(200, bad_json),
+                         fake_response(200, self.gemini_payload(translation="  "))):
+            with mock.patch("massaging.translation.requests.post", return_value=response):
+                with self.assertRaises(TranslationError):
+                    GeminiProvider("key").translate("Hola", "en")
+
+    @override_settings(TRANSLATION_PROVIDER="gemini", GEMINI_API_KEY="k", GEMINI_TRANSLATE_MODEL="gemini-3.5-flash-lite")
+    def test_get_provider_gemini_uses_configured_model(self):
+        from .translation import get_provider
+        provider = get_provider()
+        self.assertEqual((provider.name, provider.model), ("gemini", "gemini-3.5-flash-lite"))
+
+    @override_settings(TRANSLATION_PROVIDER="gemini", GEMINI_API_KEY="")
+    def test_get_provider_gemini_not_configured(self):
+        from .translation import get_provider
+        with self.assertRaises(TranslationNotConfigured):
+            get_provider()
+
     @override_settings(TRANSLATION_PROVIDER="nope")
     def test_unknown_provider(self):
         from .translation import get_provider

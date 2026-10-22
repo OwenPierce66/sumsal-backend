@@ -472,10 +472,12 @@ if DEBUG:
 
 
 # Traductor de mensajes directos y de grupo (ver massaging/translation.py).
-# TRANSLATION_PROVIDER: "deepl" (por defecto) o "google". Las claves van en .env.
+# TRANSLATION_PROVIDER: "deepl" (por defecto), "google" o "gemini". Las claves van en .env.
 TRANSLATION_PROVIDER = os.getenv("TRANSLATION_PROVIDER", "deepl")
 DEEPL_API_KEY = os.getenv("DEEPL_API_KEY", "")
 GOOGLE_TRANSLATE_API_KEY = os.getenv("GOOGLE_TRANSLATE_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_TRANSLATE_MODEL = os.getenv("GEMINI_TRANSLATE_MODEL", "")
 # Máximo de caracteres por mensaje a traducir (el plan gratuito de DeepL da 500.000/mes).
 TRANSLATION_MAX_CHARS = int(os.getenv("TRANSLATION_MAX_CHARS", "5000"))
 
