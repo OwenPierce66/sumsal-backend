@@ -1,3 +1,5 @@
+name: aportaciones-backend
+
 services:
   db:
     image: postgres:17
@@ -73,7 +75,7 @@ services:
 
   frontend-proxy:
     image: nginx:latest
-    container_name: sumsal-backend-frontend-proxy-1
+    container_name: aportaciones-backend-frontend-proxy-1
     ports:
       - "8001:80"
     volumes:
@@ -84,5 +86,9 @@ services:
       - django
 
 volumes:
-  postgres_data: {}
-  redis_data: {}
+  postgres_data:
+    external: true
+    name: sumsal-backend_postgres_data
+  redis_data:
+    external: true
+    name: sumsal-backend_redis_data
