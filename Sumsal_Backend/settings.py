@@ -481,6 +481,16 @@ GEMINI_TRANSLATE_MODEL = os.getenv("GEMINI_TRANSLATE_MODEL", "")
 # Máximo de caracteres por mensaje a traducir (el plan gratuito de DeepL da 500.000/mes).
 TRANSLATION_MAX_CHARS = int(os.getenv("TRANSLATION_MAX_CHARS", "5000"))
 
+# Cuenta que representa a la App: el "like de la App" que da un superadmin sale a su nombre.
+APP_ACCOUNT_EMAIL = os.getenv("APP_ACCOUNT_EMAIL", "owen@gmail.com").strip()
+
+# Suscripciones con Stripe. Las claves solo viven en el backend.
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
+# Pesos por dólar: con 16, 16 MXN equivalen a 1 USD y la insignia
+# "Suscripción +" (8 USD) se alcanza con 128 MXN al mes.
+SUBSCRIPTION_MXN_PER_USD = os.getenv("SUBSCRIPTION_MXN_PER_USD", "16").strip()
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/6.0/ref/settings/#default-auto-field
 

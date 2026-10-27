@@ -20,6 +20,7 @@ from .models import (
     NewCategory,
     CategoryP,
     Notification,
+    Subscription,
 )
 
 
@@ -128,7 +129,10 @@ class ProfileAdmin(admin.ModelAdmin):
         ),
         (
             _("Subscription"),
-            {"fields": ("subscriptionActive", "subscription_amount")},
+            {
+                "fields": ("subscriptionActive", "subscription_amount", "stripe_customer_id"),
+                "description": _("Se recalcula solo con las suscripciones de Stripe que recibe el perfil."),
+            },
         ),
         (_("Permissions"), {"fields": ("role",)}),
         (_("Important dates"), {"fields": ("created_at", "updated_at")}),
@@ -275,3 +279,21 @@ class NotificationAdmin(admin.ModelAdmin):
         "dedupe_key",
     ]
     readonly_fields = ["id", "created_at", "updated_at"]
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(admin.ModelAdmin):
+    list_display = [
+        "subscriber",
+        "recipient",
+        "amount_cents",
+        "currency",
+        "status",
+        "auto_renew",
+        "current_period_end",
+        "created_at",
+    ]
+    list_filter = ["status", "currency", "auto_renew", "created_at"]
+    search_fields = ["subscriber__email", "recipient__email", "stripe_subscription_id"]
+    # El estado lo manda Stripe: se cambia allá, no aquí.
+    readonly_fields = [field.name for field in Subscription._meta.fields]

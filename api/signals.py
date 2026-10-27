@@ -13,6 +13,7 @@ from django.utils import timezone
 from massaging.models import GroupMessage, GroupMembership, Message, MessageLike
 
 from .models import (
+    CommentTag,
     Favorito,
     Follow,
     Like,
@@ -217,9 +218,20 @@ def _notify_monthly_petition_top_five():
 def notify_task_tag(sender, instance, created, **kwargs):
     """Notifica a la persona etiquetada en una publicación.
     Si la publicación es de categoría 'Grabar Podcast', la notificación
-    usa el tipo especial 'podcast_invite' para destacarla como felicitación."""
-    if not created:
+    usa el tipo especial 'podcast_invite' para destacarla como felicitación.
+    Si la publicación está oculta, se avisa hasta que se publique."""
+    if not created or instance.task.is_hidden:
         return
+    _notify_task_tag(instance)
+
+
+def notify_task_tags_on_publish(task):
+    """Una tarea oculta se publicó: avisa a quienes ya estaban etiquetados."""
+    for tag in task.tagged_users.select_related("task", "user", "tagged_by"):
+        _notify_task_tag(tag)
+
+
+def _notify_task_tag(instance):
     task = instance.task
     is_podcast = "grabar podcast" in (task.categories or "").lower()
     if is_podcast:
@@ -244,6 +256,13 @@ def notify_task_tag(sender, instance, created, **kwargs):
         text=f"{_actor_name(instance.tagged_by)} te etiquetó en una publicación",
         data={"task_title": _excerpt(task.title, 80)},
     )
+
+
+@receiver(post_delete, sender=CommentTag)
+def retire_comment_tag_notification(sender, instance, **kwargs):
+    from .testimonials import retire_tag_notification
+
+    retire_tag_notification(instance)
 
 
 @receiver(post_delete, sender=TaskTag)

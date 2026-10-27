@@ -8,6 +8,9 @@ from rest_framework_simplejwt.views import (
 )
 
 from . import push_views
+from . import subscription_views
+from . import user_badges
+from . import testimonials
 # ─── Vistas JWT con throttling propio ────────────────────────────────────────
 class ThrottledLoginView(TokenObtainPairView):
     throttle_classes = [ts.LoginThrottle]
@@ -33,6 +36,9 @@ urlpatterns = [
     path('users/me/', views.UserMeView.as_view(), name='user-me'),
     path('users/me/tasks/', views.UserMyTasksView.as_view(), name='user-my-tasks'),
     path('users/me/relations/', views.my_relations, name='user-my-relations'),
+    path('users/badges/', user_badges.user_badges, name='user-badges'),
+    path('users/<uuid:user_id>/testimonials/', testimonials.user_testimonials, name='user-testimonials'),
+    path('testimonials/<uuid:pk>/', testimonials.testimonial_detail, name='testimonial-detail'),
     path('users/<uuid:user_id>/social/', views.user_social_stats, name='user-social-stats'),
     path('users/<uuid:user_id>/follow/', views.toggle_user_follow, name='user-follow-toggle'),
     path('users/<uuid:user_id>/followers/', views.user_followers, name='user-followers'),
@@ -129,4 +135,13 @@ urlpatterns = [
     path('admin/profiles/<uuid:profile_id>/like/', views.admin_app_like_profile, name='admin-profile-like'),
 
     path('push-tokens/', push_views.PushTokenView.as_view(), name='push-token-register'),  # ← agregar en urlpatterns
+
+    # ─── Suscripciones (Stripe) ──────────────────────────────────────────────
+    path('subscriptions/', subscription_views.my_subscriptions, name='subscription-list'),
+    path('subscriptions/checkout/', subscription_views.subscription_checkout, name='subscription-checkout'),
+    path('subscriptions/checkout/done/', subscription_views.subscription_checkout_done, name='subscription-checkout-done'),
+    path('subscriptions/webhook/', subscription_views.stripe_webhook, name='subscription-webhook'),
+    path('subscriptions/status/<uuid:user_id>/', subscription_views.subscription_status, name='subscription-status'),
+    path('subscriptions/<uuid:pk>/', subscription_views.subscription_detail, name='subscription-detail'),
+    path('subscriptions/<uuid:pk>/sync/', subscription_views.subscription_sync, name='subscription-sync'),
 ]

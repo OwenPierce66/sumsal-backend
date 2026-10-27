@@ -118,6 +118,10 @@ class Profile(TimeStampedModel):
         _("language"), max_length=10, default="es",
         help_text=_("Idioma al que el traductor de mensajes traduce para esta persona."),
     )
+    stripe_customer_id = models.CharField(
+        _("Stripe customer"), max_length=255, blank=True, default="",
+        help_text=_("Cliente de Stripe con el que esta persona paga sus suscripciones."),
+    )
 
     class Meta:
         verbose_name = _("profile")
@@ -394,6 +398,9 @@ class Task(TimeStampedModel):
         on_delete=models.SET_NULL,
         related_name="story_copies",
     )
+    # Modo oculto: solo su dueño la ve, en su perfil, como vista previa de
+    # cómo quedaría publicada. Al quitarlo se publica para todos.
+    is_hidden = models.BooleanField(_("hidden"), default=False)
     share_count = models.PositiveIntegerField(default=0)
     interaction_score = models.IntegerField(default=0, help_text=_("Score for feed ranking"))
 
@@ -614,6 +621,40 @@ class LikeCommentPost(TimeStampedModel):
         unique_together = ("user", "comment")
 
 
+class CommentTag(TimeStampedModel):
+    """Persona etiquetada en un comentario.
+
+    Si la persona lo aprueba, el comentario aparece en su perfil como
+    testimonio (sección Testimonios, visible para todos).
+    """
+    STATUS_PENDING = "pending"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pendiente"),
+        (STATUS_APPROVED, "Aprobado"),
+        (STATUS_REJECTED, "Rechazado"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    comment = models.ForeignKey(NewPeticionCommentPost, on_delete=models.CASCADE, related_name="tags")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="comment_tags",
+    )
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+
+    class Meta:
+        unique_together = ("comment", "user")
+        indexes = [
+            models.Index(fields=["user", "status", "-created_at"], name="commenttag_user_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} tagged in comment {self.comment_id} ({self.status})"
+
+
 # ============================================================================
 # COMENTARIOS Y LIKES PARA TAREAS COMPARTIDAS
 # ============================================================================
@@ -785,3 +826,57 @@ class PushToken(models.Model):
 
     def __str__(self):
         return f"PushToken({self.user_id}, {self.platform})"
+
+
+class Subscription(TimeStampedModel):
+    """Suscripción mensual que `subscriber` paga a favor de `recipient`.
+
+    Quien paga elige el monto (mínimo 10 MXN o 1 USD) y si se renueva sola.
+    Puede ser para sí mismo o un regalo a otro perfil. El estado lo manda
+    Stripe; `Profile.subscriptionActive/subscription_amount` se recalculan a
+    partir de las suscripciones activas que recibe cada perfil.
+    """
+    CURRENCY_MXN = "mxn"
+    CURRENCY_USD = "usd"
+    CURRENCY_CHOICES = [(CURRENCY_MXN, "MXN"), (CURRENCY_USD, "USD")]
+
+    STATUS_PENDING = "pending"
+    # El resto son los estados de Stripe tal cual (active, past_due, canceled...).
+    ACTIVE_STATUSES = ("active", "trialing")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    subscriber = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="subscriptions_paid",
+    )
+    recipient = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="subscriptions_received",
+    )
+    amount_cents = models.PositiveIntegerField()
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES)
+    auto_renew = models.BooleanField(default=True)
+    status = models.CharField(max_length=32, default=STATUS_PENDING)
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    stripe_checkout_session_id = models.CharField(max_length=255, blank=True, default="")
+    stripe_subscription_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["recipient", "status"], name="subscription_recipient_idx"),
+            models.Index(fields=["subscriber", "status"], name="subscription_subscriber_idx"),
+        ]
+
+    @property
+    def is_active(self):
+        return (
+            self.status in self.ACTIVE_STATUSES
+            and self.current_period_end is not None
+            and self.current_period_end > timezone.now()
+        )
+
+    def __str__(self):
+        return f"Subscription({self.subscriber_id} -> {self.recipient_id}, {self.amount_cents} {self.currency})"

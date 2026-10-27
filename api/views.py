@@ -46,7 +46,9 @@ from .serializers import (
     PosttSerializer
 )
 from . import models as ms
+from .app_account import app_account_email, get_app_account
 from .notifications import retire_notification, create_notification
+from .signals import notify_task_tags_on_publish
 from itertools import chain
 from massaging.models import Message
 from . import throttling as ts
@@ -143,6 +145,20 @@ def exclude_unsaved_stories(queryset, prefix=""):
     return queryset.exclude(**{f"{prefix}is_story": True, f"{prefix}story_saved": False})
 
 
+def exclude_hidden_tasks(queryset, owner=None, prefix=""):
+    """Las tareas en modo oculto solo las ve su dueño (`owner`); nadie más.
+    `prefix` permite aplicarlo a relaciones (p. ej. "task__")."""
+    hidden = Q(**{f"{prefix}is_hidden": True})
+    if owner is not None and getattr(owner, "is_authenticated", False):
+        hidden &= ~Q(**{f"{prefix}user_id": owner.pk})
+    return queryset.exclude(hidden)
+
+
+def visible_tasks_for(user):
+    """Tareas con las que `user` puede interactuar (las públicas y sus ocultas)."""
+    return exclude_hidden_tasks(ms.Task.objects.all(), user)
+
+
 def ensure_visible_like(user, task):
     """Garantiza que `user` tenga un like visible en `task`.
 
@@ -174,6 +190,12 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
     recommended_users_only = params.get("recommended_users_only")
 
     queryset = exclude_unsaved_stories(queryset)
+    # Las ocultas solo aparecen en el perfil de su dueño, cuando él lo ve.
+    viewing_own_profile = (
+        owner_id is not None and request_user is not None
+        and str(owner_id) == str(getattr(request_user, "pk", ""))
+    )
+    queryset = exclude_hidden_tasks(queryset, request_user if viewing_own_profile else None)
     if owner_id:
         queryset = queryset.filter(user_id=owner_id)
     if pch:
@@ -650,6 +672,15 @@ def user_recommendations(request, user_id):
 # Relaciones que TaskSerializer / SharedTaskSerializer / PosttSerializer recorren
 # por cada item. Precargarlas mantiene constante el n?? de queries por p??gina (Fase 36).
 _USER_EXTRAS = ("profile", "fixed_images", "likes_received")
+# Lo que serializa cada comentario o respuesta: la aportación favorita adjunta
+# (aportacion_info: su autor y su portada) y las personas etiquetadas.
+_COMMENT_EXTRAS = (
+    "aportacion__user",
+    "aportacion__subtasks",
+    "aportacion__subfactores",
+    "aportacion__subfuentes",
+    "tags__user",
+)
 TASK_SERIALIZER_PREFETCH = (
     *(f"user__{rel}" for rel in _USER_EXTRAS),
     "likes",
@@ -665,6 +696,8 @@ TASK_SERIALIZER_PREFETCH = (
     "subfactores",
     "subfuentes",
     "shared_instances__shared_by__fixed_images",
+    *(f"post_comments__{rel}" for rel in _COMMENT_EXTRAS),
+    *(f"post_comments__replies__{rel}" for rel in _COMMENT_EXTRAS),
 )
 SHARED_TASK_PREFETCH = (
     *(f"shared_by__{rel}" for rel in _USER_EXTRAS),
@@ -954,7 +987,10 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         # Precarga todas las relaciones que TaskSerializer accede para eliminar N+1
-        return ms.Task.objects.select_related(
+        queryset = ms.Task.objects.all()
+        if not (self.request.user.is_staff or self.request.user.is_superuser):
+            queryset = exclude_hidden_tasks(queryset, self.request.user)
+        return queryset.select_related(
             "user",
             "user__profile",
         ).prefetch_related(
@@ -977,7 +1013,11 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
             self.request.user.is_staff or self.request.user.is_superuser
         ):
             raise PermissionDenied("No tienes permiso para editar esta tarea.")
+        was_hidden = serializer.instance.is_hidden
         task = serializer.save()
+        if was_hidden and not task.is_hidden:
+            # Se publicó: ahora sí se avisa a quienes estaban etiquetados.
+            notify_task_tags_on_publish(task)
         block_models = {
             "subtasks": ms.SubTask,
             "subfactores": ms.SubFactores,
@@ -1007,10 +1047,11 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
                         "id": self.request.data.get(f"{prefix}[id]"),
                         "title": self.request.data.get(f"{prefix}[title]", ""),
                         "description": self.request.data.get(f"{prefix}[description]", ""),
+                        "link": self.request.data.get(f"{prefix}[link]"),
                         "image_file": self.request.FILES.get(f"{prefix}[image]"),
                         "video_file": self.request.FILES.get(f"{prefix}[video]"),
                     }
-                    if any((block["id"], block["title"], block["description"], block["image_file"], block["video_file"])):
+                    if any((block["id"], block["title"], block["description"], block["link"], block["image_file"], block["video_file"])):
                         blocks.append(block)
 
             kept_ids = set()
@@ -1020,6 +1061,9 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
                     "title": (block_data.get("title") or "").strip(),
                     "description": block_data.get("description") or "",
                 }
+                # Solo si se envía: los clientes que no conocen el enlace no lo borran.
+                if block_data.get("link") is not None:
+                    values["link"] = str(block_data.get("link")).strip()
                 image_file = block_data.get("image_file")
                 video_file = block_data.get("video_file")
                 if block_id:
@@ -1035,7 +1079,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
                         update_fields.append("video")
                     block.save(update_fields=update_fields)
                     kept_ids.add(block.id)
-                elif values["title"] or values["description"]:
+                elif values["title"] or values["description"] or values.get("link"):
                     create_values = {**values}
                     if image_file:
                         create_values["image"] = image_file
@@ -1060,7 +1104,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def toggle_task_like(request, task_id):
-    task = get_object_or_404(ms.Task, id=task_id)
+    task = get_object_or_404(visible_tasks_for(request.user), id=task_id)
     like, created = ms.Like.objects.get_or_create(user=request.user, task=task)
     if not created and like.is_hidden:
         # Like de una historia guardada: ya contaba en el total, solo reaparece
@@ -1245,18 +1289,26 @@ class TaskCommentListCreateView(generics.ListCreateAPIView):
             "aportacion",
             "aportacion__user",
         ).prefetch_related(
+            # Foto y likes del autor (SimpleUserSerializer): sin esto, 2 consultas por comentario
+            "created_by__fixed_images",
+            "created_by__likes_received",
+            *_COMMENT_EXTRAS,
             "replies",
             "replies__created_by",
-            "replies__created_by__profile",
+            *(f"replies__created_by__{rel}" for rel in _USER_EXTRAS),
+            *(f"replies__{rel}" for rel in _COMMENT_EXTRAS),
             "replies__likes",
             "replies__replies",
             "replies__replies__created_by",
+            *(f"replies__replies__created_by__{rel}" for rel in _USER_EXTRAS),
+            *(f"replies__replies__{rel}" for rel in _COMMENT_EXTRAS),
             "replies__replies__likes",
             "likes",
         )
 
     def perform_create(self, serializer):
         task_id = self.kwargs.get("task_id")
+        get_object_or_404(visible_tasks_for(self.request.user), id=task_id)
         original_comment = serializer.save(created_by=self.request.user, post_id=task_id)
 
         # ⚡ SINCRONIZAR BIDIRECCIONAL: Replicar respuesta en la tarea compartida si el padre es un clon
@@ -1345,7 +1397,7 @@ def repost_task(request, task_id):
     """
     try:
         # Usamos select_for_update para bloquear la fila y evitar race conditions
-        task = ms.Task.objects.select_for_update().get(id=task_id)
+        task = visible_tasks_for(request.user).select_for_update().get(id=task_id)
 
         repost_instance, created = ms.Repost.objects.get_or_create(user=request.user, task=task)
 
@@ -1384,7 +1436,7 @@ def share_task_to_story(request):
     if not source_task_id:
         return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    source_task = get_object_or_404(ms.Task, id=source_task_id)
+    source_task = get_object_or_404(visible_tasks_for(request.user), id=source_task_id)
 
     source_item = None
     if source_item_type and source_item_id:
@@ -1551,7 +1603,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         from datetime import timedelta
         from django.db.models import Count
         
-        qs = super().get_queryset()
+        qs = exclude_hidden_tasks(super().get_queryset(), prefix="task__")
         pch = self.request.query_params.get("pch")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
@@ -1649,6 +1701,11 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 
         # Bloqueamos la tarea para actualizarla de forma segura
         task = get_object_or_404(ms.Task.objects.select_for_update(), id=task_id)
+        if task.is_hidden:
+            return Response(
+                {"detail": "Esta aportación está oculta. Publícala antes de compartirla."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Cada compartida es independiente: un usuario puede compartir la misma tarea
         # cuantas veces quiera, cada una con su propia descripción.
@@ -1682,7 +1739,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def agregar_favorito(request):
-    task = get_object_or_404(ms.Task, id=request.data.get("task_id"))
+    task = get_object_or_404(visible_tasks_for(request.user), id=request.data.get("task_id"))
     fav, created = ms.Favorito.objects.get_or_create(user=request.user, task=task)
     if not created:
         fav.delete()
@@ -1760,7 +1817,9 @@ def favorite_collection(request, user_id=None):
         return Response({"updated": True})
 
     profiles = ms.pFavorito.objects.filter(user=owner).select_related("perfil")
-    tasks = ms.Favorito.objects.filter(user=owner).select_related("task").prefetch_related(
+    tasks = exclude_hidden_tasks(
+        ms.Favorito.objects.filter(user=owner), request.user, prefix="task__",
+    ).select_related("task").prefetch_related(
         *(f"task__{rel}" for rel in TASK_SERIALIZER_PREFETCH)
     )
     if not is_owner:
@@ -1844,7 +1903,7 @@ def toggle_favorite_pin(request):
             )
     elif kind == "task":
         if auto_add:
-            target_task = get_object_or_404(ms.Task, id=target_id)
+            target_task = get_object_or_404(visible_tasks_for(request.user), id=target_id)
             favorite, _ = ms.Favorito.objects.get_or_create(
                 user=request.user, task=target_task
             )
@@ -1902,9 +1961,9 @@ def search_directory(request):
         | Q(first_name__icontains=query)
         | Q(last_name__icontains=query)
     ).exclude(pk=request.user.pk)[:20] if scope in {"profiles", "both"} else []
-    tasks = exclude_unsaved_stories(ms.Task.objects.filter(
+    tasks = exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.filter(
         Q(title__icontains=query) | Q(description__icontains=query)
-    )).select_related("user").prefetch_related(
+    ))).select_related("user").prefetch_related(
         *TASK_SERIALIZER_PREFETCH
     ).order_by("-created_at")[:20] if scope in {"tasks", "both"} else []
     return Response({
@@ -2263,14 +2322,14 @@ class FeedView(generics.ListAPIView):
 
         # ✅ COMPORTAMIENTO POR DEFECTO: Mostrar solo tareas originales.
         if sort_by != 'all':
-            tasks = exclude_unsaved_stories(ms.Task.objects.all()).annotate(
+            tasks = exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.all())).annotate(
                 priority=user_priority
             ).select_related('user__profile').prefetch_related(*TASK_SERIALIZER_PREFETCH)
 
         # ✅ COMPORTAMIENTO PARA "all": Mostrar el feed unificado.
         else:
-            tasks = exclude_unsaved_stories(ms.Task.objects.all()).annotate(priority=user_priority).select_related('user__profile')
-            shared_tasks = ms.SharedTask.objects.annotate(priority=shared_by_priority).select_related('shared_by__profile', 'task__user__profile')
+            tasks = exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.all())).annotate(priority=user_priority).select_related('user__profile')
+            shared_tasks = exclude_hidden_tasks(ms.SharedTask.objects.all(), prefix="task__").annotate(priority=shared_by_priority).select_related('shared_by__profile', 'task__user__profile')
 
             task_items = [
                 FeedItem(item=task, priority=task.priority, is_original=True)
@@ -2597,37 +2656,67 @@ def admin_suspend_reported_user(request, report_id):
 # ACCIONES ADMIN ADICIONALES (FIX PARA URLS)
 # ============================================================================
 
+def _requested_like(request):
+    """`liked` del body: true (por defecto) da el like, false lo quita, como en la web."""
+    value = request.data.get("liked", True) if hasattr(request.data, "get") else True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "0", "no", ""}
+    return bool(value)
+
+
+def _app_account_or_error(request):
+    """(cuenta de la App, None) o (None, respuesta de error) si no hay permiso o no existe."""
+    if not request.user.is_superuser:
+        return None, Response({"detail": "Forbidden"}, status=403)
+    app_account = get_app_account()
+    if app_account is None:
+        return None, Response(
+            {"detail": f"No existe la cuenta de la App ({app_account_email() or 'APP_ACCOUNT_EMAIL vacío'})."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return app_account, None
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def admin_app_like_task(request, task_id):
-    """Admin: dar like a una tarea con la cuenta bot de la app"""
-    if not request.user.is_superuser:
-        return Response({"detail": "Forbidden"}, status=403)
-    
+    """Superadmin: dar o quitar el like de la App (APP_ACCOUNT_EMAIL) a una tarea. Body: {liked}."""
+    app_account, error = _app_account_or_error(request)
+    if error:
+        return error
+
     task = get_object_or_404(ms.Task, id=task_id)
-    # Aquí podrías definir un usuario bot específico, por ahora usamos el actual
-    like, created = ensure_visible_like(request.user, task)
-    
+    if _requested_like(request):
+        ensure_visible_like(app_account, task)
+    else:
+        ms.Like.objects.filter(user=app_account, task=task).delete()
+
     return Response({
         "task_id": task.id,
-        "liked": True,
-        "likes_count": task.likes.count()
+        "liked": ms.Like.objects.filter(user=app_account, task=task).exists(),
+        "likes_count": task.likes.count(),
+        "app_account_id": app_account.id,
     })
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def admin_app_like_profile(request, profile_id):
-    """Admin: dar like a un perfil con la cuenta bot de la app"""
-    if not request.user.is_superuser:
-        return Response({"detail": "Forbidden"}, status=403)
-    
+    """Superadmin: dar o quitar el like de la App (APP_ACCOUNT_EMAIL) a un perfil. Body: {liked}."""
+    app_account, error = _app_account_or_error(request)
+    if error:
+        return error
+
     profile_user = get_object_or_404(User, id=profile_id)
-    ms.LikeP.objects.get_or_create(user=request.user, profile=profile_user)
-    
+    if _requested_like(request):
+        ms.LikeP.objects.get_or_create(user=app_account, profile=profile_user)
+    else:
+        ms.LikeP.objects.filter(user=app_account, profile=profile_user).delete()
+
     return Response({
         "profile_id": profile_user.id,
-        "liked": True,
-        "likes_count": profile_user.likes_received.count()
+        "liked": ms.LikeP.objects.filter(user=app_account, profile=profile_user).exists(),
+        "likes_count": profile_user.likes_received.count(),
+        "app_account_id": app_account.id,
     })
 
 # ============================================================================

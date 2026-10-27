@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from django.db.models import OuterRef, Subquery, Count, Q
 from django.conf import settings
 from . import models as ms
+from .app_account import app_account_id_for
 from .upload_validation import validate_image_upload, validate_video_upload
 
 User = get_user_model()
@@ -451,6 +452,21 @@ class RecursiveCommentSerializer(serializers.Serializer):
         return serializer.data
 
 
+def first_task_image(task):
+    """Imagen de portada: la de la tarea o, si no tiene, la del primer bloque con imagen.
+
+    Muchas aportaciones guardan la media en sus consejos, factores o fuentes y no
+    en la tarea. Recorre `.all()` para aprovechar el prefetch de las listas.
+    """
+    if task.image:
+        return task.image
+    for relation in ("subtasks", "subfactores", "subfuentes"):
+        for block in getattr(task, relation).all():
+            if block.image:
+                return block.image
+    return None
+
+
 class NewPeticionCommentSerializer(serializers.ModelSerializer):
     created_by = SimpleUserSerializer(read_only=True)
     
@@ -460,6 +476,11 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
     aportacion_info = serializers.SerializerMethodField()
+    # Personas etiquetadas: si aprueban, el comentario sale en su perfil como testimonio.
+    tagged_users = serializers.SerializerMethodField()
+    tagged_user_ids = serializers.ListField(
+        child=serializers.UUIDField(), write_only=True, required=False, max_length=10,
+    )
 
     class Meta:
         model = ms.NewPeticionCommentPost
@@ -470,6 +491,8 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
             "post",
             "aportacion",
             "aportacion_info",
+            "tagged_users",
+            "tagged_user_ids",
             "text",
             "children",
             "likes_count",
@@ -489,6 +512,32 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
             return related_has_user(obj, "likes", request.user)
         return False
 
+    def get_tagged_users(self, obj):
+        # Las que rechazaron el testimonio ya no salen etiquetadas.
+        return [
+            {"id": str(tag.user_id), "username": tag.user.username, "status": tag.status}
+            for tag in obj.tags.all()
+            if tag.status != ms.CommentTag.STATUS_REJECTED
+        ]
+
+    def create(self, validated_data):
+        from .testimonials import sync_comment_tags
+
+        tagged_ids = validated_data.pop("tagged_user_ids", None)
+        comment = super().create(validated_data)
+        if tagged_ids:
+            sync_comment_tags(comment, tagged_ids)
+        return comment
+
+    def update(self, instance, validated_data):
+        from .testimonials import sync_comment_tags
+
+        tagged_ids = validated_data.pop("tagged_user_ids", None)
+        comment = super().update(instance, validated_data)
+        if tagged_ids is not None:
+            sync_comment_tags(comment, tagged_ids)
+        return comment
+
     def get_aportacion_info(self, obj):
         """Datos mínimos de la aportación favorita adjunta (None si no hay)."""
         task = obj.aportacion
@@ -499,7 +548,8 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
         return {
             "id": str(task.id),
             "title": task.title,
-            "image": file_to_abs_url(task.image, request),
+            "image": file_to_abs_url(first_task_image(task), request),
+            "pch": task.pch or None,
             "username": (owner.username if owner else None) or task.username or None,
         }
 
@@ -525,18 +575,6 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
                 "Solo puedes adjuntar una de tus aportaciones favoritas."
             )
         return value
-
-    def validate(self, attrs):
-        # En la web solo los comentarios principales llevaban aportación.
-        if attrs.get("aportacion") is not None:
-            parent = attrs.get("parent")
-            if parent is None and self.instance is not None:
-                parent = self.instance.parent
-            if parent is not None:
-                raise serializers.ValidationError(
-                    {"aportacion": "Las respuestas no pueden adjuntar una aportación."}
-                )
-        return attrs
     
 class SubTaskSerializer(serializers.ModelSerializer):
     class Meta:
@@ -576,6 +614,7 @@ class TaskSerializer(serializers.ModelSerializer):
     favorite_sharers_count = serializers.SerializerMethodField()
     tagged_users = serializers.SerializerMethodField()
     podcast_invitation_status = serializers.SerializerMethodField()
+    app_has_liked = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
@@ -618,6 +657,18 @@ class TaskSerializer(serializers.ModelSerializer):
         else:
             invitation = obj.podcast_invitations.filter(user=request.user).first()
         return invitation.status if invitation else None
+
+    def get_app_has_liked(self, obj):
+        """¿La cuenta de la App ya dio like? Solo para superadmins (menú "Like de la App")."""
+        request = self.context.get("request")
+        if not request or not getattr(request.user, "is_superuser", False):
+            return None
+        app_account_id = app_account_id_for(request)
+        if app_account_id is None:
+            return None
+        if is_prefetched(obj, "likes"):
+            return any(like.user_id == app_account_id for like in obj.likes.all())
+        return obj.likes.filter(user_id=app_account_id).exists()
 
     def validate(self, attrs):
         """Los estados de moderación solo cambian mediante el endpoint de aprobación."""

@@ -300,6 +300,58 @@ class TaskUpdateRegressionTests(TestCase):
         self.assertTrue(bool(subtask.image), "La imagen debería haberse guardado")
         self.assertIn("updated", subtask.image.name)
 
+    def test_owner_can_patch_block_links(self):
+        user = User.objects.create_user(
+            email="link-owner@example.com",
+            password="testpass123",
+            username="link-owner",
+        )
+        task = ms.Task.objects.create(user=user, title="Tarea con enlaces")
+        subtask = ms.SubTask.objects.create(parent_task=task, title="Bloque", link="https://viejo.example")
+        fuente = ms.SubFuentes.objects.create(parent_task=task, title="Fuente", link="https://fuente.example")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        url = reverse("task-detail", kwargs={"id": task.id})
+
+        response = client.patch(
+            url,
+            {
+                "subtasks[0][id]": str(subtask.id),
+                "subtasks[0][title]": "Bloque",
+                "subtasks[0][link]": "  https://nuevo.example/articulo  ",
+                # Bloque nuevo que solo trae enlace
+                "subtasks[1][link]": "https://solo-enlace.example",
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200)
+        subtask.refresh_from_db()
+        self.assertEqual(subtask.link, "https://nuevo.example/articulo")
+        self.assertTrue(
+            ms.SubTask.objects.filter(parent_task=task, link="https://solo-enlace.example").exists()
+        )
+
+        # Un cliente que no envía el enlace no lo borra.
+        response = client.patch(
+            url,
+            {"subfuentes": [{"id": fuente.id, "title": "Fuente editada"}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        fuente.refresh_from_db()
+        self.assertEqual(fuente.title, "Fuente editada")
+        self.assertEqual(fuente.link, "https://fuente.example")
+
+        # Y uno que lo envía vacío sí lo quita.
+        response = client.patch(
+            url,
+            {"subfuentes": [{"id": fuente.id, "title": "Fuente editada", "link": ""}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        fuente.refresh_from_db()
+        self.assertEqual(fuente.link, "")
+
 
 class SharedTaskViewRegressionTests(TestCase):
     def test_shared_task_list_view_uses_shared_task_serializer(self):
