@@ -9,6 +9,7 @@ from rest_framework_simplejwt.views import (
 
 from . import push_views
 from . import subscription_views
+from . import petition_support_views
 from . import user_badges
 from . import testimonials
 # ─── Vistas JWT con throttling propio ────────────────────────────────────────
@@ -65,6 +66,10 @@ urlpatterns = [
     path('tasks/<uuid:task_id>/users-who-liked/', views.users_who_liked_task, name='task-likers'),
     path('tasks/<uuid:task_id>/users-who-shared/', views.users_who_shared_task, name='task-sharers'),
     path('tasks/<uuid:task_id>/tags/', views.sync_task_tags, name='task-tags'),
+    path('tasks/<uuid:task_id>/support/', petition_support_views.petition_support_checkout, name='petition-support-checkout'),
+    path('tasks/<uuid:task_id>/supporters/', petition_support_views.petition_supporters, name='petition-supporters'),
+    path('petition-supports/checkout/done/', petition_support_views.petition_support_checkout_done, name='petition-support-checkout-done'),
+    path('petition-supports/<uuid:pk>/sync/', petition_support_views.petition_support_sync, name='petition-support-sync'),
     path('tasks/<uuid:task_id>/approve/', views.toggle_task_approval, name='task-approve'),
     path('tasks/<uuid:task_id>/podcast-invitation/', views.respond_podcast_invitation, name='podcast-invitation-response'),
 

@@ -692,6 +692,7 @@ TASK_SERIALIZER_PREFETCH = (
     *(f"post_comments__replies__created_by__{rel}" for rel in _USER_EXTRAS),
     "tagged_users__user",
     "podcast_invitations",
+    "petition_supports",
     "subtasks",
     "subfactores",
     "subfuentes",

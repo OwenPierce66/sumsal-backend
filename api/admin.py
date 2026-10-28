@@ -20,6 +20,7 @@ from .models import (
     NewCategory,
     CategoryP,
     Notification,
+    PetitionSupport,
     Subscription,
 )
 
@@ -297,3 +298,11 @@ class SubscriptionAdmin(admin.ModelAdmin):
     search_fields = ["subscriber__email", "recipient__email", "stripe_subscription_id"]
     # El estado lo manda Stripe: se cambia allá, no aquí.
     readonly_fields = [field.name for field in Subscription._meta.fields]
+
+
+@admin.register(PetitionSupport)
+class PetitionSupportAdmin(admin.ModelAdmin):
+    list_display = ["supporter", "task", "amount_cents", "currency", "status", "paid_at", "created_at"]
+    list_filter = ["status", "currency", "created_at"]
+    search_fields = ["supporter__email", "task__title", "stripe_checkout_session_id"]
+    readonly_fields = [field.name for field in PetitionSupport._meta.fields]

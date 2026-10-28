@@ -615,6 +615,7 @@ class TaskSerializer(serializers.ModelSerializer):
     tagged_users = serializers.SerializerMethodField()
     podcast_invitation_status = serializers.SerializerMethodField()
     app_has_liked = serializers.SerializerMethodField()
+    support_total = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
@@ -657,6 +658,16 @@ class TaskSerializer(serializers.ModelSerializer):
         else:
             invitation = obj.podcast_invitations.filter(user=request.user).first()
         return invitation.status if invitation else None
+
+    def get_support_total(self, obj):
+        """Lo recaudado por una petición (en MXN). None si la tarea no es petición."""
+        from .petition_supports import is_petition, support_summary
+        if not is_petition(obj):
+            return None
+        supports = obj.petition_supports.all()
+        if not is_prefetched(obj, "petition_supports"):
+            supports = supports.filter(status=ms.PetitionSupport.STATUS_PAID)
+        return support_summary(supports)
 
     def get_app_has_liked(self, obj):
         """¿La cuenta de la App ya dio like? Solo para superadmins (menú "Like de la App")."""

@@ -16,6 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Profile, Subscription
+from .petition_supports import handle_support_event
 from .subscription_serializers import CheckoutRequestSerializer, SubscriptionSerializer
 from .subscriptions import (
     SubscriptionsUnavailable,
@@ -191,7 +192,9 @@ def stripe_webhook(request):
     except (ValueError, stripe.SignatureVerificationError):
         return HttpResponse(status=400)
     try:
+        # Las suscripciones y los apoyos a peticiones comparten el endpoint.
         handle_webhook_event(event)
+        handle_support_event(event)
     except stripe.StripeError:
         # Stripe reintenta los webhooks que no responden 2xx.
         logger.exception("Falló el webhook %s", event["type"])

@@ -880,3 +880,34 @@ class Subscription(TimeStampedModel):
 
     def __str__(self):
         return f"Subscription({self.subscriber_id} -> {self.recipient_id}, {self.amount_cents} {self.currency})"
+
+class PetitionSupport(TimeStampedModel):
+    """Apoyo monetario único que `supporter` da a una petición.
+
+    Lo puede dar cualquiera, también quien creó la petición. Solo cuentan los
+    pagados; los pendientes son sesiones de Checkout que aún no se pagan.
+    """
+    STATUS_PENDING = "pending"
+    STATUS_PAID = "paid"
+    STATUS_EXPIRED = "expired"
+    STATUS_CHOICES = [(STATUS_PENDING, "Pendiente"), (STATUS_PAID, "Pagado"), (STATUS_EXPIRED, "Expirado")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="petition_supports")
+    supporter = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="petition_supports",
+    )
+    amount_cents = models.PositiveIntegerField()
+    currency = models.CharField(max_length=3, choices=Subscription.CURRENCY_CHOICES)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    stripe_checkout_session_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["task", "status"], name="petition_support_task_idx")]
+
+    def __str__(self):
+        return f"PetitionSupport({self.supporter_id} -> {self.task_id}, {self.amount_cents} {self.currency})"
