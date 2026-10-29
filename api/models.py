@@ -13,6 +13,9 @@ from django.utils.translation import gettext_lazy as _
 APPROVED_TAG = "aprobada"
 # Categoría que convierte una publicación en propuesta de podcast.
 PODCAST_CATEGORY = "Grabar Podcast"
+# Testimonios: técnicamente un tipo de aportación más (pch), pero no es una de las 3 PCH
+# del frontend: no sale en el feed, solo en la pestaña Testimonios del perfil.
+TESTIMONIAL_PCH = "testimonios"
 
 # Etiquetas de estado: viven en `categories` pero no son categorías de filtro.
 STATUS_TAGS = {"aprobada", "aprobadas", "procesando"}
@@ -401,6 +404,35 @@ class Task(TimeStampedModel):
     # Modo oculto: solo su dueño la ve, en su perfil, como vista previa de
     # cómo quedaría publicada. Al quitarlo se publica para todos.
     is_hidden = models.BooleanField(_("hidden"), default=False)
+    # Testimonio escrito en el perfil de `testimonial_for` (pch "testimonios"): una
+    # publicación con todas sus funciones que esa persona aprueba antes de que se vea
+    # (`testimonial_status`: pending / approved / rejected).
+    testimonial_for = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="testimonial_tasks",
+    )
+    testimonial_status = models.CharField(max_length=16, blank=True, default="")
+    # Publicada en un grupo: los integrantes la envían y un admin la aprueba
+    # antes de que se vea (las de los admins se aprueban solas).
+    group = models.ForeignKey(
+        "CommunityGroup",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="tasks",
+    )
+    group_status = models.CharField(max_length=16, blank=True, default="")
+    group_reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_group_tasks",
+    )
+    group_reviewed_at = models.DateTimeField(null=True, blank=True)
     share_count = models.PositiveIntegerField(default=0)
     interaction_score = models.IntegerField(default=0, help_text=_("Score for feed ranking"))
 
@@ -510,6 +542,43 @@ class Favorito(models.Model):
         ]
 
 
+class TaskSave(models.Model):
+    """Tarea guardada. Jerarquía: Guardar -> Favorito (Favorito) -> Top 5 (Favorito.is_pinned),
+    igual que Seguir -> Favorito -> Anclado en los perfiles.
+
+    Agregar a favoritos o anclar la guarda automáticamente; quitarla de guardados quita también
+    el favorito, el top 5 y sus anclajes por categoría (ver signals.py).
+    `is_private`: solo la ve su dueño aunque sus guardados sean públicos."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="saved_tasks")
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="saved_by")
+    is_private = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "task"], name="task_save_user_task_uniq"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "-created_at"], name="task_save_user_date_idx"),
+        ]
+
+
+class TaskCategoryPin(models.Model):
+    """Top 5 por categoría: una tarea favorita anclada en una de sus categorías."""
+    MAX_PER_CATEGORY = 5
+
+    favorite = models.ForeignKey(Favorito, on_delete=models.CASCADE, related_name="category_pins")
+    category = models.CharField(max_length=120)
+    position = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["favorite", "category"], name="task_category_pin_uniq"),
+        ]
+        ordering = ["position", "created_at"]
+
+
 class pFavorito(models.Model):
     """Favoritos de perfiles/usarios."""
     # Mantener esta relación en User para coincidir con el esquema real de Postgres.
@@ -603,7 +672,9 @@ class NewPeticionCommentPost(TimeStampedModel):
     post = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="post_comments")
     aportacion = models.ForeignKey(Task, on_delete=models.SET_NULL, null=True, blank=True, related_name="aportacion_comments")
     
-    text = models.TextField(_("comment text"))
+    # Foto o video adjunto al comentario (como en la web antigua).
+    attachment = models.FileField(upload_to="comments/", null=True, blank=True)
+    text = models.TextField(_("comment text"), blank=True)
 
     class Meta:
         ordering = ["-created_at"]
@@ -664,7 +735,16 @@ class SharedTaskComment(TimeStampedModel):
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="shared_task_comments")
     parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="replies")
     shared_task = models.ForeignKey(SharedTask, on_delete=models.CASCADE, related_name="comments")
-    text = models.TextField(_("comment text"))
+    text = models.TextField(_("comment text"), blank=True)
+    # Lo que puede acompañar el comentario (como en los de las tareas): foto o video,
+    # una de tus publicaciones guardadas y personas etiquetadas.
+    attachment = models.FileField(upload_to="comments/", null=True, blank=True)
+    aportacion = models.ForeignKey(
+        "Task", on_delete=models.SET_NULL, null=True, blank=True, related_name="shared_comment_aportaciones",
+    )
+    tagged_users = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="shared_comment_tags",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -711,9 +791,20 @@ class ImagenFija(TimeStampedModel):
 class Postt(TimeStampedModel):
     """Hilo de foro simple"""
     title = models.CharField(max_length=100, blank=True)
-    content = models.TextField()
+    content = models.TextField(blank=True)
+    # Mismo formato que Task.categories ("Tema,Subtema,..."): de la app o propias del autor.
+    categories = models.TextField(blank=True, default="")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="forum_posts")
     parent = models.ForeignKey("self", on_delete=models.CASCADE, null=True, blank=True, related_name="forum_replies")
+    # Lo que puede acompañar un post o respuesta: foto o video, una de tus publicaciones
+    # guardadas y personas etiquetadas.
+    attachment = models.FileField(upload_to="forum/", null=True, blank=True)
+    aportacion = models.ForeignKey(
+        "Task", on_delete=models.SET_NULL, null=True, blank=True, related_name="forum_aportaciones",
+    )
+    tagged_users = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="forum_post_tags",
+    )
 
     class Meta:
         ordering = ["-created_at"]
@@ -911,3 +1002,66 @@ class PetitionSupport(TimeStampedModel):
 
     def __str__(self):
         return f"PetitionSupport({self.supporter_id} -> {self.task_id}, {self.amount_cents} {self.currency})"
+
+
+
+class CommunityGroup(TimeStampedModel):
+    """Grupo de la red social (no confundir con los grupos de chat de `massaging`).
+
+    Cualquiera lo crea con nombre, descripción y reglas. Público: se entra al
+    instante. Privado: un admin aprueba cada solicitud y sus publicaciones solo
+    las ven sus integrantes.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+    rules = models.TextField(blank=True, default="")
+    image = models.ImageField(upload_to="groups/", null=True, blank=True)
+    is_private = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        on_delete=models.SET_NULL,
+        related_name="created_community_groups",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return self.name
+
+
+class CommunityGroupMember(TimeStampedModel):
+    ROLE_OWNER = "owner"
+    ROLE_ADMIN = "admin"
+    ROLE_MEMBER = "member"
+    ROLE_CHOICES = [(ROLE_OWNER, "Creador"), (ROLE_ADMIN, "Admin"), (ROLE_MEMBER, "Integrante")]
+    ADMIN_ROLES = (ROLE_OWNER, ROLE_ADMIN)
+
+    STATUS_ACTIVE = "active"
+    # Solicitud para entrar a un grupo privado, esperando a un admin.
+    STATUS_PENDING = "pending"
+    STATUS_CHOICES = [(STATUS_ACTIVE, "Activo"), (STATUS_PENDING, "Solicitud pendiente")]
+
+    group = models.ForeignKey(CommunityGroup, on_delete=models.CASCADE, related_name="memberships")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="community_memberships",
+    )
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default=ROLE_MEMBER)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["group", "user"], name="unique_community_group_member"),
+        ]
+        indexes = [models.Index(fields=["user", "status"], name="community_member_user_idx")]
+
+    @property
+    def is_admin(self):
+        return self.status == self.STATUS_ACTIVE and self.role in self.ADMIN_ROLES
+
+    def __str__(self):
+        return f"{self.user_id} en {self.group_id} ({self.role}, {self.status})"

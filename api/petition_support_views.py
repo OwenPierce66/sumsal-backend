@@ -3,6 +3,8 @@ from collections import defaultdict
 from decimal import Decimal
 
 import stripe
+from django.contrib.auth import get_user_model
+from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
@@ -21,6 +23,7 @@ from .subscriptions import SubscriptionsUnavailable, stripe_configured
 from .views import visible_tasks_for
 
 logger = logging.getLogger(__name__)
+User = get_user_model()
 
 _NOT_PETITION = {"detail": "Solo las peticiones se pueden apoyar monetariamente."}
 
@@ -134,3 +137,77 @@ def petition_support_checkout_done(request):
         title="¡Gracias por tu apoyo!",
         message="Tu aportación a la petición quedó registrada. Ya puedes cerrar esta ventana y volver a la app.",
     ))
+
+
+def _task_info(task):
+    return {
+        "id": str(task.id),
+        "title": task.title,
+        "is_hidden": task.is_hidden,
+        "user": {"id": str(task.user_id), "username": task.user.username},
+    }
+
+
+def _supports_of(user, viewer):
+    """Las peticiones que `user` apoyó y lo que recibieron las suyas, en MXN, por petición.
+
+    `viewer` no ve las peticiones ocultas de otras personas (las suyas sí).
+    """
+    paid = (
+        PetitionSupport.objects.filter(status=PetitionSupport.STATUS_PAID)
+        .filter(Q(task__is_hidden=False) | Q(task__user=viewer))
+        .select_related("task__user")
+    )
+
+    given = {}
+    for support in paid.filter(supporter=user).order_by("-paid_at", "-created_at"):
+        row = given.setdefault(support.task_id, {
+            "task": _task_info(support.task), "cents": 0, "times": 0,
+            "last_paid_at": support.paid_at or support.created_at,
+        })
+        row["cents"] += to_mxn_cents(support.amount_cents, support.currency)
+        row["times"] += 1
+
+    received = {}
+    for support in paid.filter(task__user=user).order_by("-paid_at", "-created_at"):
+        row = received.setdefault(support.task_id, {
+            "task": _task_info(support.task), "cents": 0, "supporters": set(),
+            "last_paid_at": support.paid_at or support.created_at,
+        })
+        row["cents"] += to_mxn_cents(support.amount_cents, support.currency)
+        row["supporters"].add(support.supporter_id)
+
+    def money(cents):
+        return f"{Decimal(cents) / 100:.2f}"
+
+    return {
+        "given": [
+            {"task": r["task"], "amount_mxn": money(r["cents"]), "times": r["times"], "last_paid_at": r["last_paid_at"]}
+            for r in given.values()
+        ],
+        "received": [
+            {"task": r["task"], "amount_mxn": money(r["cents"]), "supporters_count": len(r["supporters"]),
+             "last_paid_at": r["last_paid_at"]}
+            for r in received.values()
+        ],
+        "summary": {
+            "given_mxn": money(sum(r["cents"] for r in given.values())),
+            "received_mxn": money(sum(r["cents"] for r in received.values())),
+        },
+        "stripe_enabled": stripe_configured(),
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_petition_supports(request):
+    """Mis apoyos: las peticiones que apoyé y lo que recibieron las mías."""
+    return Response(_supports_of(request.user, request.user))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_petition_supports(request, user_id):
+    """Apoyos de otro perfil. Es público: cada petición ya muestra quién la apoyó y cuánto."""
+    user = get_object_or_404(User, pk=user_id, is_active=True)
+    return Response({"user": {"id": str(user.pk), "username": user.username}, **_supports_of(user, request.user)})

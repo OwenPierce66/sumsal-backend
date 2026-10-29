@@ -127,6 +127,25 @@ def my_subscriptions(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def user_subscriptions(request, user_id):
+    """Suscripciones de otro perfil, solo lectura: las activas que recibe (lo que ya suma
+    su insignia) y las que regala a otros perfiles (que se ven en el perfil de quien las recibe)."""
+    user = get_object_or_404(User, pk=user_id, is_active=True)
+    active = Subscription.objects.select_related("subscriber", "recipient").filter(
+        status__in=Subscription.ACTIVE_STATUSES,
+        current_period_end__gt=timezone.now(),
+    )
+    return Response({
+        "user": {"id": str(user.pk), "username": user.username},
+        "paid": SubscriptionSerializer(active.filter(subscriber=user).exclude(recipient=user), many=True).data,
+        "received": SubscriptionSerializer(active.filter(recipient=user), many=True).data,
+        "summary": _summary(user.pk),
+        "stripe_enabled": stripe_configured(),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def subscription_status(request, user_id):
     user = get_object_or_404(User, pk=user_id)
     mine = (

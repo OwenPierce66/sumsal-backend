@@ -10,6 +10,8 @@ from .models import (
     Like,
     LikeP,
     Favorito,
+    TaskCategoryPin,
+    TaskSave,
     pFavorito,
     NewPeticionCommentPost,
     LikeCommentPost,
@@ -20,6 +22,8 @@ from .models import (
     NewCategory,
     CategoryP,
     Notification,
+    CommunityGroup,
+    CommunityGroupMember,
     PetitionSupport,
     Subscription,
 )
@@ -184,6 +188,21 @@ class FavoritoAdmin(admin.ModelAdmin):
     readonly_fields = ["created_at"]
 
 
+@admin.register(TaskSave)
+class TaskSaveAdmin(admin.ModelAdmin):
+    list_display = ["user", "task", "is_private", "created_at"]
+    search_fields = ["user__email", "task__title"]
+    list_filter = ["is_private", "created_at"]
+    readonly_fields = ["created_at"]
+
+
+@admin.register(TaskCategoryPin)
+class TaskCategoryPinAdmin(admin.ModelAdmin):
+    list_display = ["favorite", "category", "position", "created_at"]
+    search_fields = ["favorite__user__email", "favorite__task__title", "category"]
+    readonly_fields = ["created_at"]
+
+
 @admin.register(pFavorito)
 class pFavoritoAdmin(admin.ModelAdmin):
     list_display = ["user", "perfil", "created_at"]
@@ -306,3 +325,17 @@ class PetitionSupportAdmin(admin.ModelAdmin):
     list_filter = ["status", "currency", "created_at"]
     search_fields = ["supporter__email", "task__title", "stripe_checkout_session_id"]
     readonly_fields = [field.name for field in PetitionSupport._meta.fields]
+
+
+class CommunityGroupMemberInline(admin.TabularInline):
+    model = CommunityGroupMember
+    extra = 0
+    raw_id_fields = ["user"]
+
+
+@admin.register(CommunityGroup)
+class CommunityGroupAdmin(admin.ModelAdmin):
+    list_display = ["name", "is_private", "created_by", "created_at"]
+    list_filter = ["is_private", "created_at"]
+    search_fields = ["name", "description", "created_by__email"]
+    inlines = [CommunityGroupMemberInline]

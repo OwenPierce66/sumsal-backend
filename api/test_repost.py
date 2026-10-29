@@ -44,6 +44,24 @@ class RepostLikeInteractionTests(TestCase):
         self.assertEqual(response.data["interaction_score"], 0)
         self.assertTrue(ms.Like.objects.filter(user=self.user, task=self.task).exists())
 
+    def test_reposts_count_counts_only_impulses(self):
+        response = self.client.post(self.repost_url, {}, format="json")
+        self.assertEqual(response.data["reposts_count"], 1)
+
+        # Compartir sube interaction_score pero no es un impulso.
+        sharer = User.objects.create_user(username="sharer", email="sharer@example.com", password="x")
+        sharer_client = APIClient()
+        sharer_client.force_authenticate(sharer)
+        shared = sharer_client.post(reverse("shared-task-list-create"), {"task_id": str(self.task.id)}, format="json")
+        self.assertEqual(shared.status_code, 201, shared.data)
+
+        detail = self.client.get(reverse("task-detail", kwargs={"id": self.task.id}))
+        self.assertEqual(detail.data["reposts_count"], 1)
+        self.assertEqual(detail.data["interaction_score"], 2)
+
+        response = self.client.post(self.repost_url, {}, format="json")
+        self.assertEqual(response.data["reposts_count"], 0)
+
     def test_preexisting_like_is_not_duplicated_or_used_as_repost_state(self):
         ms.Like.objects.create(user=self.user, task=self.task)
 

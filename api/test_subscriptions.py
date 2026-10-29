@@ -288,3 +288,15 @@ class SubscriptionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["is_active"])
         self.assertEqual(response.data["status"], "active")
+
+    def test_other_profile_shows_received_and_gifted_subscriptions_read_only(self):
+        self.active_subscription(self.luis, self.luis, 1600, "mxn", sub_id="sub_own")
+        self.active_subscription(self.luis, self.ana, 500, "usd", sub_id="sub_gift")
+        self.active_subscription(self.ana, self.luis, 1000, "mxn", sub_id="sub_in")
+        ms.Subscription.objects.create(subscriber=self.luis, recipient=self.ana, amount_cents=9999, currency="mxn")
+
+        data = self.client.get(reverse("subscription-user-list", kwargs={"user_id": self.luis.id})).data
+        self.assertEqual(data["user"]["username"], "luis")
+        self.assertEqual([s["recipient"]["username"] for s in data["paid"]], ["ana"])
+        self.assertEqual(sorted(s["subscriber"]["username"] for s in data["received"]), ["ana", "luis"])
+        self.assertTrue(data["summary"]["active"])

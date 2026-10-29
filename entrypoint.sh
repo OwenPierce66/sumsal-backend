@@ -13,8 +13,14 @@ else
   echo "--- ¡Base de datos iniciada! ---"
 fi
 
-echo "--- Aplicando migraciones ---"
-python manage.py migrate --noinput
+# Solo un contenedor aplica las migraciones: si dos las corren a la vez (django y
+# celery-worker) chocan creando las mismas tablas y uno se cae.
+if [ "$SKIP_MIGRATIONS" = "true" ]; then
+  echo "--- Migraciones omitidas: las aplica el servicio django ---"
+else
+  echo "--- Aplicando migraciones ---"
+  python manage.py migrate --noinput
+fi
 
 if [ "$DEBUG" = "False" ] || [ "$DEBUG" = "0" ] || [ -n "$RENDER" ]; then
   echo "--- Recolectando archivos estáticos ---"

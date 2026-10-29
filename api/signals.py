@@ -30,6 +30,7 @@ from .models import (
     SharedTask,
     SharedTaskComment,
     Task,
+    TaskSave,
     TaskTag,
     pFavorito,
     APPROVED_TAG,
@@ -220,7 +221,7 @@ def notify_task_tag(sender, instance, created, **kwargs):
     Si la publicación es de categoría 'Grabar Podcast', la notificación
     usa el tipo especial 'podcast_invite' para destacarla como felicitación.
     Si la publicación está oculta, se avisa hasta que se publique."""
-    if not created or instance.task.is_hidden:
+    if not created or instance.task.is_hidden or instance.task.group_status == "pending":
         return
     _notify_task_tag(instance)
 
@@ -508,6 +509,14 @@ def retire_story_share(sender, instance, **kwargs):
         _retire(instance, kwargs.get("origin"))
 
 
+@receiver(post_delete, sender=Task)
+def retire_written_testimonial(sender, instance, **kwargs):
+    """Un testimonio borrado ya no espera respuesta de la persona del perfil."""
+    if instance.testimonial_for_id:
+        from .testimonials import retire_written_testimonial as retire
+        retire(instance)
+
+
 @receiver(post_save, sender=LikeP)
 def notify_profile_like(sender, instance, created, **kwargs):
     if created:
@@ -537,13 +546,50 @@ def notify_task_favorite(sender, instance, created, **kwargs):
             notification_type="task_favorite",
             target_type="task",
             target_id=instance.task_id,
-            text=f"{_actor_name(instance.user)} guardó tu tarea en favoritos.",
+            text=f"{_actor_name(instance.user)} agregó tu tarea a sus favoritos.",
             data={"title": instance.task.title},
         )
 
 
 @receiver(post_delete, sender=Favorito)
 def retire_task_favorite(sender, instance, **kwargs):
+    _retire(instance, kwargs.get("origin"))
+
+
+@receiver(post_save, sender=Favorito)
+def save_when_favorited(sender, instance, created, **kwargs):
+    """Agregar a favoritos (o anclar) guarda la tarea: favoritos ⊂ guardados."""
+    if created:
+        TaskSave.objects.get_or_create(user_id=instance.user_id, task_id=instance.task_id)
+
+
+@receiver(post_delete, sender=TaskSave)
+def unfavorite_when_unsaved(sender, instance, **kwargs):
+    """Quitar de guardados quita también el favorito (y con él el top 5 y sus anclajes por categoría)."""
+    Favorito.objects.filter(user_id=instance.user_id, task_id=instance.task_id).delete()
+
+
+@receiver(post_save, sender=TaskSave)
+def notify_task_save(sender, instance, created, **kwargs):
+    if not created or not instance.task.user_id:
+        return
+    if Favorito.objects.filter(user_id=instance.user_id, task_id=instance.task_id).exists():
+        # Se guardó al agregarla a favoritos: ya se avisó con esa notificación.
+        return
+    _notify(
+        instance,
+        recipient=instance.task.user,
+        actor=instance.user,
+        notification_type="task_save",
+        target_type="task",
+        target_id=instance.task_id,
+        text=f"{_actor_name(instance.user)} guardó tu tarea.",
+        data={"title": instance.task.title},
+    )
+
+
+@receiver(post_delete, sender=TaskSave)
+def retire_task_save(sender, instance, **kwargs):
     _retire(instance, kwargs.get("origin"))
 
 

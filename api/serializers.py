@@ -330,6 +330,19 @@ class SimpleUserSerializer(serializers.ModelSerializer):
         return False
 
 
+class TaskAuthorSerializer(SimpleUserSerializer):
+    """Autor de una tarea: además, cuántos lo siguen (el contador junto a su avatar en los reels).
+
+    Va aparte de SimpleUserSerializer para no contar seguidores en comentarios, listas, etc."""
+    followers_count = serializers.SerializerMethodField()
+
+    class Meta(SimpleUserSerializer.Meta):
+        fields = [*SimpleUserSerializer.Meta.fields, "followers_count"]
+
+    def get_followers_count(self, obj):
+        return related_count(obj, "follower_relationships")
+
+
 class AdminUserSerializer(serializers.ModelSerializer):
     profile = ProfileSerializer(read_only=True)
 
@@ -467,7 +480,147 @@ def first_task_image(task):
     return None
 
 
-class NewPeticionCommentSerializer(serializers.ModelSerializer):
+COMMENT_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+COMMENT_VIDEO_MAX_BYTES = 50 * 1024 * 1024
+_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "heic", "heif"}
+_VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "webm", "avi", "mkv", "3gp"}
+
+
+def comment_attachment_kind(name, content_type=""):
+    """'image', 'video' o None según el tipo o la extensión del archivo adjunto."""
+    content_type = str(content_type or "").lower()
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type.startswith("video/"):
+        return "video"
+    extension = str(name or "").rsplit(".", 1)[-1].lower() if "." in str(name or "") else ""
+    if extension in _IMAGE_EXTENSIONS:
+        return "image"
+    if extension in _VIDEO_EXTENSIONS:
+        return "video"
+    return None
+
+
+class AttachmentAportacionMixin(serializers.Serializer):
+    """Lo que puede acompañar un comentario o mensaje: una foto o video (`attachment`, se sube
+    con multipart y se lee en `attachment_url` / `attachment_type`) y una de tus publicaciones
+    guardadas (`aportacion`, se lee en `aportacion_info`).
+
+    `TEXT_FIELD` es el campo del texto: al crear puede ir vacío solo si lleva foto o video.
+    """
+    TEXT_FIELD = "text"
+
+    attachment = serializers.FileField(write_only=True, required=False, allow_null=True)
+    attachment_url = serializers.SerializerMethodField()
+    attachment_type = serializers.SerializerMethodField()
+    aportacion_info = serializers.SerializerMethodField()
+
+    def get_attachment_url(self, obj):
+        return file_to_abs_url(obj.attachment, self.context.get("request")) if obj.attachment else None
+
+    def get_attachment_type(self, obj):
+        if not obj.attachment:
+            return None
+        return "video" if comment_attachment_kind(obj.attachment.name) == "video" else "image"
+
+    def validate_attachment(self, value):
+        if value is None:
+            return value
+        kind = comment_attachment_kind(getattr(value, "name", ""), getattr(value, "content_type", ""))
+        if kind is None:
+            raise serializers.ValidationError("Solo puedes adjuntar una foto o un video.")
+        limit = COMMENT_VIDEO_MAX_BYTES if kind == "video" else COMMENT_IMAGE_MAX_BYTES
+        if value.size > limit:
+            raise serializers.ValidationError(f"El archivo es muy grande (máximo {limit // (1024 * 1024)} MB).")
+        return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # Al crear, puede ser solo una foto o video, pero no puede ir vacío.
+        if self.instance is None and not str(attrs.get(self.TEXT_FIELD) or "").strip() and not attrs.get("attachment"):
+            raise serializers.ValidationError({self.TEXT_FIELD: "Escribe algo o adjunta una foto o video."})
+        return attrs
+
+    def get_aportacion_info(self, obj):
+        """Datos mínimos de la publicación guardada adjunta (None si no hay)."""
+        task = obj.aportacion
+        if task is None:
+            return None
+        request = self.context.get("request")
+        owner = task.user
+        return {
+            "id": str(task.id),
+            "title": task.title,
+            "image": file_to_abs_url(first_task_image(task), request),
+            "pch": task.pch or None,
+            "username": (owner.username if owner else None) or task.username or None,
+        }
+
+    def validate_aportacion(self, value):
+        """Solo se puede adjuntar una aportación que el autor tiene guardada (las favoritas
+        también están guardadas).
+
+        Igual que en la web antigua ("Seleccionar Aportación Favorita"). Si ya la tenía
+        (edición) no se vuelve a exigir, para no romper mensajes cuyo autor la quitó luego.
+        """
+        if value is None:
+            return value
+        if self.instance is not None and self.instance.aportacion_id == value.pk:
+            return value
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError("Debes iniciar sesión.")
+        if value.is_story and not value.story_saved:
+            raise serializers.ValidationError("Esta aportación no está disponible.")
+        if not ms.TaskSave.objects.filter(user=user, task=value).exists():
+            raise serializers.ValidationError(
+                "Solo puedes adjuntar una de tus aportaciones guardadas."
+            )
+        return value
+
+
+class MessageExtrasMixin(AttachmentAportacionMixin):
+    """Además de la foto o video y la publicación guardada, personas etiquetadas
+    (`tagged_user_ids` al escribir, `tagged_users` al leer). Cada etiquetado nuevo
+    recibe un aviso (`notify_tagged`, lo define cada serializer)."""
+    MAX_TAGS = 10
+
+    tagged_users = serializers.SerializerMethodField()
+    tagged_user_ids = serializers.ListField(
+        child=serializers.UUIDField(), write_only=True, required=False, max_length=MAX_TAGS,
+    )
+
+    def get_tagged_users(self, obj):
+        return [{"id": str(user.id), "username": user.username} for user in obj.tagged_users.all()]
+
+    def _tag(self, instance, tagged_ids, actor):
+        users = list(User.objects.filter(id__in=tagged_ids).exclude(pk=actor.pk))
+        before = set(instance.tagged_users.values_list("id", flat=True))
+        instance.tagged_users.set(users)
+        new_users = [user for user in users if user.pk not in before]
+        if new_users:
+            self.notify_tagged(instance, new_users, actor)
+
+    def notify_tagged(self, instance, users, actor):
+        raise NotImplementedError
+
+    def create(self, validated_data):
+        tagged_ids = validated_data.pop("tagged_user_ids", None)
+        instance = super().create(validated_data)
+        if tagged_ids:
+            self._tag(instance, tagged_ids, self.context["request"].user)
+        return instance
+
+    def update(self, instance, validated_data):
+        tagged_ids = validated_data.pop("tagged_user_ids", None)
+        instance = super().update(instance, validated_data)
+        if tagged_ids is not None:
+            self._tag(instance, tagged_ids, self.context["request"].user)
+        return instance
+
+
+class NewPeticionCommentSerializer(AttachmentAportacionMixin, serializers.ModelSerializer):
     created_by = SimpleUserSerializer(read_only=True)
     
     # 🛡️ FIX 500: Lee del related_name "replies", pero lo exporta como "children" para React Native
@@ -475,7 +628,6 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
     
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
-    aportacion_info = serializers.SerializerMethodField()
     # Personas etiquetadas: si aprueban, el comentario sale en su perfil como testimonio.
     tagged_users = serializers.SerializerMethodField()
     tagged_user_ids = serializers.ListField(
@@ -494,6 +646,9 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
             "tagged_users",
             "tagged_user_ids",
             "text",
+            "attachment",
+            "attachment_url",
+            "attachment_type",
             "children",
             "likes_count",
             "user_has_liked",
@@ -502,6 +657,7 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
         ]
         # 🛡️ FIX 400: Añadimos 'post' para que DRF no lo exija en la validación inicial
         read_only_fields = ["id", "created_by", "post"]
+        extra_kwargs = {"text": {"required": False, "allow_blank": True}}
 
     def get_likes_count(self, obj):
         return related_count(obj, "likes")
@@ -538,44 +694,7 @@ class NewPeticionCommentSerializer(serializers.ModelSerializer):
             sync_comment_tags(comment, tagged_ids)
         return comment
 
-    def get_aportacion_info(self, obj):
-        """Datos mínimos de la aportación favorita adjunta (None si no hay)."""
-        task = obj.aportacion
-        if task is None:
-            return None
-        request = self.context.get("request")
-        owner = task.user
-        return {
-            "id": str(task.id),
-            "title": task.title,
-            "image": file_to_abs_url(first_task_image(task), request),
-            "pch": task.pch or None,
-            "username": (owner.username if owner else None) or task.username or None,
-        }
 
-    def validate_aportacion(self, value):
-        """Solo se puede adjuntar una aportación que el autor tiene en favoritos.
-
-        Igual que en la web antigua ("Seleccionar Aportación Favorita"). Si el
-        comentario ya tenía esa aportación (edición) no se vuelve a exigir, para
-        no romper comentarios cuyo autor quitó luego el favorito.
-        """
-        if value is None:
-            return value
-        if self.instance is not None and self.instance.aportacion_id == value.pk:
-            return value
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if not user or not user.is_authenticated:
-            raise serializers.ValidationError("Debes iniciar sesión.")
-        if value.is_story and not value.story_saved:
-            raise serializers.ValidationError("Esta aportación no está disponible.")
-        if not ms.Favorito.objects.filter(user=user, task=value).exists():
-            raise serializers.ValidationError(
-                "Solo puedes adjuntar una de tus aportaciones favoritas."
-            )
-        return value
-    
 class SubTaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = ms.SubTask # Asegúrate de que el modelo sea el correcto
@@ -594,12 +713,17 @@ class SubFuentesSerializer(serializers.ModelSerializer):
 
 
 class TaskSerializer(serializers.ModelSerializer):
-    user = SimpleUserSerializer(read_only=True)
+    user = TaskAuthorSerializer(read_only=True)
     likes_count = serializers.SerializerMethodField()
     period_likes_count = serializers.IntegerField(source="period_like_count", read_only=True)
     views_count = serializers.SerializerMethodField()
+    # Historias: si quien consulta ya la vio (aro gris en su avatar).
+    viewed_by_me = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
     user_has_reposted = serializers.SerializerMethodField()
+    # Cuántas personas la impulsaron (el número junto al botón de impulsar). No es
+    # `interaction_score`, que también sube al compartir.
+    reposts_count = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     # ✅ FIX: Especificamos que el campo 'comments' debe leer de la relación 'post_comments' del modelo Task.
     comments = NewPeticionCommentSerializer(source='post_comments', many=True, read_only=True)
@@ -616,6 +740,11 @@ class TaskSerializer(serializers.ModelSerializer):
     podcast_invitation_status = serializers.SerializerMethodField()
     app_has_liked = serializers.SerializerMethodField()
     support_total = serializers.SerializerMethodField()
+    group_info = serializers.SerializerMethodField()
+    # Testimonio: en qué perfil se escribió ("Testimonio para @...").
+    testimonial_for_info = serializers.SerializerMethodField()
+    # Historia que comparte un testimonio: su texto, para verla como tarjeta con la cita.
+    testimonial_story = serializers.SerializerMethodField()
 
     class Meta:
         model = ms.Task
@@ -623,7 +752,71 @@ class TaskSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id", "user", "share_count", "created_at",
             "is_story", "story_saved", "story_prompted",
+            "group_status", "group_reviewed_by", "group_reviewed_at",
+            "testimonial_status",
         ]
+
+    def get_testimonial_story(self, obj):
+        if not obj.story_source_task_id:
+            return None
+        source = obj.story_source_task
+        if source is None or not source.testimonial_for_id:
+            return None
+        return {
+            "title": source.title,
+            "text": source.description,
+            "for_username": source.testimonial_for.username if source.testimonial_for else "",
+        }
+
+    def get_testimonial_for_info(self, obj):
+        recipient = obj.testimonial_for
+        if recipient is None:
+            return None
+        return {"id": str(recipient.pk), "username": recipient.username}
+
+    def _validate_testimonial(self, attrs):
+        """Un testimonio es una publicación en el perfil de OTRA persona (pch "testimonios").
+        La pch "testimonios" no se usa para nada más y el perfil no se cambia después."""
+        instance = getattr(self, "instance", None)
+        if instance is not None and "testimonial_for" in attrs and attrs["testimonial_for"] != instance.testimonial_for:
+            raise serializers.ValidationError({"testimonial_for": "Un testimonio no se puede mover a otro perfil."})
+        recipient = attrs.get("testimonial_for", getattr(instance, "testimonial_for", None))
+        pch = str(attrs.get("pch", getattr(instance, "pch", "")) or "").strip().casefold()
+        if recipient is None:
+            if pch == ms.TESTIMONIAL_PCH:
+                raise serializers.ValidationError({"pch": "Los testimonios se escriben en el perfil de alguien."})
+            return
+        request = self.context.get("request")
+        if instance is None and getattr(getattr(request, "user", None), "pk", None) == recipient.pk:
+            raise serializers.ValidationError({"testimonial_for": "No puedes escribir un testimonio en tu propio perfil."})
+        if attrs.get("group") is not None:
+            raise serializers.ValidationError({"group": "Un testimonio no se publica en un grupo."})
+        attrs["pch"] = ms.TESTIMONIAL_PCH
+        attrs["is_hidden"] = False
+
+    def get_group_info(self, obj):
+        """El grupo donde se publicó (nombre para la etiqueta "en el grupo X")."""
+        group = obj.group
+        if group is None:
+            return None
+        return {"id": str(group.id), "name": group.name, "is_private": group.is_private}
+
+    def validate_group(self, group):
+        """Solo se elige al crear la tarea, y hay que ser integrante del grupo."""
+        if self.instance is not None:
+            if group != self.instance.group:
+                raise serializers.ValidationError("Una publicación no se puede mover de grupo.")
+            return group
+        if group is None:
+            return group
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        is_member = ms.CommunityGroupMember.objects.filter(
+            group=group, user=user, status=ms.CommunityGroupMember.STATUS_ACTIVE,
+        ).exists() if getattr(user, "is_authenticated", False) else False
+        if not is_member:
+            raise serializers.ValidationError("Únete al grupo para publicar en él.")
+        return group
 
     def validate_video(self, value):
         return validate_video_upload(value)
@@ -683,7 +876,13 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Los estados de moderación solo cambian mediante el endpoint de aprobación."""
+        self._validate_testimonial(attrs)
         instance = getattr(self, "instance", None)
+        group = attrs.get("group", getattr(instance, "group", None))
+        if group is not None and attrs.get("is_hidden"):
+            raise serializers.ValidationError({
+                "is_hidden": "Las publicaciones de un grupo no se guardan ocultas: las revisa un admin del grupo.",
+            })
         if "categories" in attrs or "pch" in attrs:
             def moderation_statuses(value):
                 statuses = set()
@@ -837,6 +1036,18 @@ class TaskSerializer(serializers.ModelSerializer):
             return annotated_count
         return obj.story_views.count()
 
+    def get_viewed_by_me(self, obj):
+        if obj.pch != "historias":
+            return False
+        annotated = getattr(obj, "viewed_by_me", None)
+        if annotated is not None:
+            return bool(annotated)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        return obj.story_views.filter(viewer=user).exists()
+
     def get_user_has_liked(self, obj):
         request = self.context.get("request")
         if request and request.user.is_authenticated:
@@ -847,6 +1058,9 @@ class TaskSerializer(serializers.ModelSerializer):
                 )
             return obj.likes.filter(user=request.user, is_hidden=False).exists()
         return False
+
+    def get_reposts_count(self, obj):
+        return related_count(obj, "reposts")
 
     def get_user_has_reposted(self, obj):
         request = self.context.get("request")
@@ -963,7 +1177,9 @@ class ImagenFijaSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class PosttSerializer(serializers.ModelSerializer):
+class PosttSerializer(MessageExtrasMixin, serializers.ModelSerializer):
+    TEXT_FIELD = "content"
+
     user = SimpleUserSerializer(read_only=True)
     replies = serializers.SerializerMethodField()
     title = serializers.CharField(required=False, allow_blank=True)
@@ -972,8 +1188,50 @@ class PosttSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ms.Postt
-        fields = ["id", "title", "content", "user", "parent", "replies", "created_at", "likes_count", "has_liked"]
+        fields = [
+            "id", "title", "content", "categories", "user", "parent", "replies", "created_at", "likes_count",
+            "has_liked", "attachment", "attachment_url", "attachment_type", "aportacion", "aportacion_info",
+            "tagged_users", "tagged_user_ids",
+        ]
         read_only_fields = ["id", "user", "created_at", "likes_count", "has_liked"]
+        extra_kwargs = {
+            "content": {"required": False, "allow_blank": True},
+            "categories": {"required": False, "allow_blank": True},
+        }
+
+    MAX_CATEGORIES = 20
+
+    def validate_categories(self, value):
+        """Igual que en las tareas ("Tema,Subtema,..."), sin repetidas y sin las etiquetas
+        de estado (aprobada/procesando), que en el foro no aplican."""
+        names, seen = [], set()
+        for raw in str(value or "").split(","):
+            name = " ".join(raw.split())[:100]
+            key = name.casefold()
+            if not name or key in seen or key in ms.STATUS_TAGS or key in APPROVED_TAG_ALIASES:
+                continue
+            seen.add(key)
+            names.append(name)
+        if len(names) > self.MAX_CATEGORIES:
+            raise serializers.ValidationError(f"Máximo {self.MAX_CATEGORIES} categorías por post.")
+        return ",".join(names)
+
+    def notify_tagged(self, instance, users, actor):
+        from .notifications import create_notification
+
+        root = instance
+        while root.parent_id:
+            root = root.parent
+        for user in users:
+            create_notification(
+                recipient=user,
+                actor=actor,
+                notification_type="forum_tag",
+                target_type="forum_post",
+                target_id=root.pk,
+                data={"text": f"{actor.username or 'Alguien'} te etiquetó en el foro."},
+                dedupe_key=f"forum_tag:{instance.pk}:{user.pk}",
+            )
 
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
@@ -1008,11 +1266,25 @@ class RecursiveSharedCommentSerializer(serializers.Serializer):
         return serializer.data
 
 
-class SharedTaskCommentSerializer(serializers.ModelSerializer):
+class SharedTaskCommentSerializer(MessageExtrasMixin, serializers.ModelSerializer):
     created_by = SimpleUserSerializer(read_only=True)
     children = RecursiveSharedCommentSerializer(source='replies', many=True, read_only=True)
     likes_count = serializers.SerializerMethodField()
     user_has_liked = serializers.SerializerMethodField()
+
+    def notify_tagged(self, instance, users, actor):
+        from .notifications import create_notification
+
+        for user in users:
+            create_notification(
+                recipient=user,
+                actor=actor,
+                notification_type="shared_comment_tag",
+                target_type="shared_task",
+                target_id=instance.shared_task_id,
+                data={"text": f"{actor.username or 'Alguien'} te etiquetó en un comentario."},
+                dedupe_key=f"shared_comment_tag:{instance.pk}:{user.pk}",
+            )
 
     class Meta:
         model = ms.SharedTaskComment
@@ -1022,6 +1294,13 @@ class SharedTaskCommentSerializer(serializers.ModelSerializer):
             "parent",
             "shared_task",
             "text",
+            "attachment",
+            "attachment_url",
+            "attachment_type",
+            "aportacion",
+            "aportacion_info",
+            "tagged_users",
+            "tagged_user_ids",
             "children",
             "likes_count",
             "user_has_liked",
@@ -1029,6 +1308,7 @@ class SharedTaskCommentSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_by", "shared_task"]
+        extra_kwargs = {"text": {"required": False, "allow_blank": True}}
 
     def get_likes_count(self, obj):
         return related_count(obj, "likes")

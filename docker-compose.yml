@@ -71,6 +71,8 @@ services:
       - PYTHONDONTWRITEBYTECODE=1
       - REDIS_URL=redis://redis:6379/1
       - CELERY_BROKER_URL=redis://redis:6379/2
+      # Las migraciones las aplica solo el servicio django (ver entrypoint.sh).
+      - SKIP_MIGRATIONS=true
     env_file: .env
 
   frontend-proxy:

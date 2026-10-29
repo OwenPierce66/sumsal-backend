@@ -200,6 +200,55 @@ class FollowHierarchyTests(TestCase):
         self.assertTrue(pFavorito.objects.get(user=self.user, perfil=self.target).is_pinned)
         self.assertTrue(Follow.objects.filter(follower=self.user, following=self.target).exists())
 
+    def test_followers_list_says_if_viewer_follows(self):
+        url = reverse("user-followers", kwargs={"user_id": self.target.id})
+        self.assertFalse(self.client.get(url).data["viewer_follows"])
+        self.client.post(self.follow_url)
+        data = self.client.get(url).data
+        self.assertTrue(data["viewer_follows"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["users"][0]["id"], str(self.user.id))
+
+    def test_task_author_includes_followers_count(self):
+        from api.models import Task
+
+        task = Task.objects.create(user=self.target, title="Reel", pch="consejos")
+        detail_url = reverse("task-detail", kwargs={"id": task.id})
+        self.assertEqual(self.client.get(detail_url).data["user"]["followers_count"], 0)
+        self.client.post(self.follow_url)
+        author = self.client.get(detail_url).data["user"]
+        self.assertEqual(author["followers_count"], 1)
+        self.assertTrue(author["is_following"])
+
+    def test_unpinning_moves_profile_to_sixth_place(self):
+        others = [
+            User.objects.create_user(email=f"fav{i}@example.com", password="pass", username=f"fav{i}")
+            for i in range(5)
+        ]
+        pin_url = reverse("favorite-pin")
+        for profile in [self.target, *others[:4]]:
+            self.client.post(pin_url, {"type": "profile", "target_id": str(profile.id)}, format="json")
+        self.client.post(reverse("pfavorito-add"), {"perfil_id": str(others[4].id)})
+
+        self.client.post(
+            pin_url, {"type": "profile", "target_id": str(self.target.id), "is_pinned": False}, format="json",
+        )
+        target_fav = pFavorito.objects.get(user=self.user, perfil=self.target)
+        self.assertFalse(target_fav.is_pinned)
+        self.assertEqual(target_fav.position, 5)
+        # El que estaba sexto sube al top 5.
+        self.assertTrue(pFavorito.objects.get(user=self.user, perfil=others[4]).is_pinned)
+        self.assertEqual(pFavorito.objects.filter(user=self.user, is_pinned=True).count(), 5)
+
+    def test_unpinning_with_few_favorites_stays_unpinned(self):
+        pin_url = reverse("favorite-pin")
+        self.client.post(pin_url, {"type": "profile", "target_id": str(self.target.id)}, format="json")
+        self.client.post(
+            pin_url, {"type": "profile", "target_id": str(self.target.id), "is_pinned": False}, format="json",
+        )
+        self.assertFalse(pFavorito.objects.get(user=self.user, perfil=self.target).is_pinned)
+        self.assertTrue(self.client.get(self.stats_url).data["is_favorited"])
+
     def test_unfollow_removes_favorite_and_pin(self):
         self.client.post(
             reverse("favorite-pin"),

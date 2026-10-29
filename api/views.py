@@ -49,6 +49,8 @@ from . import models as ms
 from .app_account import app_account_email, get_app_account
 from .notifications import retire_notification, create_notification
 from .signals import notify_task_tags_on_publish
+from . import task_saves
+from . import testimonials
 from itertools import chain
 from massaging.models import Message
 from . import throttling as ts
@@ -77,13 +79,8 @@ def make_cache_key(prefix: str, user_id, query_params: dict, timeout: int = 300)
 
 
 
-def filter_by_categories(queryset, category_filter, field_name):
-    """Match every requested category token, including user-entered terms.
-
-    Categories are still stored as a comma-separated legacy field, so matching
-    must stay token-aware and must not turn a search for "art" into a match for
-    "artificial". The same helper is used by original and shared tasks.
-    """
+def category_tokens(category_filter):
+    """"Tema, Subtema" -> ["Tema", "Subtema"]: sin vacías ni repetidas."""
     categories = []
     seen = set()
     for raw_category in (category_filter or "").split(","):
@@ -92,8 +89,18 @@ def filter_by_categories(queryset, category_filter, field_name):
         if category and normalized not in seen:
             categories.append(category)
             seen.add(normalized)
+    return categories
 
-    for category in categories:
+
+def filter_by_categories(queryset, category_filter, field_name):
+    """Match every requested category token, including user-entered terms.
+
+    Categories are still stored as a comma-separated legacy field, so matching
+    must stay token-aware and must not turn a search for "art" into a match for
+    "artificial". The same helper is used by original and shared tasks and by
+    forum posts.
+    """
+    for category in category_tokens(category_filter):
         if category.casefold() in {"aprobada", "aprobadas", "aprovada", "aprovadas"}:
             pattern = r"(?:^|,)\s*(?:aprobada?s?|aprovada?s?)\s*(?:,|$)"
         else:
@@ -125,6 +132,16 @@ def prioritize_category_path(queryset, category_filter, field_name):
     )
 
 
+def filter_by_category_path(queryset, category_filter, field_name="categories"):
+    """Filtro por niveles ("Tema,Subtema") de una lista por fecha: los de esa ruta exacta
+    primero y luego los más nuevos. Sin categoría no cambia nada."""
+    if not category_tokens(category_filter):
+        return queryset
+    return prioritize_category_path(
+        filter_by_categories(queryset, category_filter, field_name), category_filter, field_name,
+    ).order_by("category_path_rank", "-created_at")
+
+
 def normalize_filter_text(value):
     value = unicodedata.normalize("NFKD", str(value or ""))
     return "".join(char for char in value if not unicodedata.combining(char)).casefold().strip()
@@ -145,13 +162,66 @@ def exclude_unsaved_stories(queryset, prefix=""):
     return queryset.exclude(**{f"{prefix}is_story": True, f"{prefix}story_saved": False})
 
 
-def exclude_hidden_tasks(queryset, owner=None, prefix=""):
+def exclude_hidden_tasks(queryset, owner=None, prefix="", viewer=None):
     """Las tareas en modo oculto solo las ve su dueño (`owner`); nadie más.
-    `prefix` permite aplicarlo a relaciones (p. ej. "task__")."""
+    `prefix` permite aplicarlo a relaciones (p. ej. "task__").
+
+    También aplica las reglas de los grupos (ver `exclude_unavailable_group_tasks`).
+    `viewer` es quien mira (por defecto `owner`): decide si ve lo de sus grupos privados."""
     hidden = Q(**{f"{prefix}is_hidden": True})
-    if owner is not None and getattr(owner, "is_authenticated", False):
+    if _is_user(owner):
         hidden &= ~Q(**{f"{prefix}user_id": owner.pk})
-    return queryset.exclude(hidden)
+    queryset = queryset.exclude(hidden)
+    who = viewer if viewer is not None else owner
+    # Testimonios sin aprobar: solo quien lo escribió y la persona del perfil.
+    unapproved_testimonial = (
+        Q(**{f"{prefix}testimonial_for__isnull": False})
+        & ~Q(**{f"{prefix}testimonial_status": TESTIMONIAL_APPROVED})
+    )
+    if _is_user(who):
+        unapproved_testimonial &= ~Q(**{f"{prefix}user_id": who.pk}) & ~Q(**{f"{prefix}testimonial_for_id": who.pk})
+    queryset = queryset.exclude(unapproved_testimonial)
+    return exclude_unavailable_group_tasks(queryset, owner, who, prefix)
+
+
+TESTIMONIAL_APPROVED = "approved"
+
+
+def exclude_testimonials(queryset, prefix=""):
+    """Los testimonios no son una de las 3 PCH: no salen en el feed ni en las listas de
+    aportaciones; solo en la pestaña Testimonios del perfil."""
+    return queryset.exclude(**{f"{prefix}testimonial_for__isnull": False})
+
+
+def _is_user(user):
+    return user is not None and getattr(user, "is_authenticated", False)
+
+
+def exclude_unavailable_group_tasks(queryset, owner, viewer, prefix=""):
+    """Tareas de grupos:
+    - En revisión (pendientes o rechazadas): solo su autor y los admins del grupo, y
+      solo donde se trabaja con la tarea (`owner`: su perfil, el detalle); nunca en el feed.
+    - De un grupo privado: solo sus integrantes y su autor (`viewer`).
+    """
+    in_review = Q(**{f"{prefix}group__isnull": False}) & ~Q(**{f"{prefix}group_status": GROUP_TASK_APPROVED})
+    private = Q(**{f"{prefix}group__is_private": True})
+    if _is_user(owner):
+        admin_groups = ms.CommunityGroupMember.objects.filter(
+            user=owner, status=ms.CommunityGroupMember.STATUS_ACTIVE,
+            role__in=ms.CommunityGroupMember.ADMIN_ROLES,
+        ).values("group_id")
+        in_review &= ~Q(**{f"{prefix}user_id": owner.pk}) & ~Q(**{f"{prefix}group_id__in": admin_groups})
+    if _is_user(viewer):
+        member_groups = ms.CommunityGroupMember.objects.filter(
+            user=viewer, status=ms.CommunityGroupMember.STATUS_ACTIVE,
+        ).values("group_id")
+        private &= ~Q(**{f"{prefix}user_id": viewer.pk}) & ~Q(**{f"{prefix}group_id__in": member_groups})
+    return queryset.exclude(in_review | private)
+
+
+GROUP_TASK_PENDING = "pending"
+GROUP_TASK_APPROVED = "approved"
+GROUP_TASK_REJECTED = "rejected"
 
 
 def visible_tasks_for(user):
@@ -190,12 +260,16 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
     recommended_users_only = params.get("recommended_users_only")
 
     queryset = exclude_unsaved_stories(queryset)
+    if str(pch or "").strip().casefold() != ms.TESTIMONIAL_PCH:
+        queryset = exclude_testimonials(queryset)
     # Las ocultas solo aparecen en el perfil de su dueño, cuando él lo ve.
     viewing_own_profile = (
         owner_id is not None and request_user is not None
         and str(owner_id) == str(getattr(request_user, "pk", ""))
     )
-    queryset = exclude_hidden_tasks(queryset, request_user if viewing_own_profile else None)
+    queryset = exclude_hidden_tasks(
+        queryset, request_user if viewing_own_profile else None, viewer=request_user,
+    )
     if owner_id:
         queryset = queryset.filter(user_id=owner_id)
     if pch:
@@ -466,6 +540,47 @@ def toggle_user_follow(request, user_id):
 
 
 FOLLOW_LIST_LIMIT = 200
+USERS_IN_CATEGORY_LIMIT = 500
+
+
+def filter_users_by_category(users, category_filter, viewer=None):
+    """Perfiles con esa categoría ("Tema,Subtema"): las de un perfil son las de sus
+    tareas, así que entra quien tenga una tarea visible con todas esas partes, o
+    quien las tenga todas en su filtro personal (CategoryP)."""
+    tokens = category_tokens(category_filter)
+    if not tokens:
+        return users
+    tasks = filter_by_categories(
+        exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.all()), viewer=viewer),
+        ",".join(tokens),
+        "categories",
+    )
+    personal = Q()
+    for token in tokens:
+        personal &= Q(Exists(ms.CategoryP.objects.filter(user_id=OuterRef("pk"), name__iexact=token)))
+    return users.filter(Q(Exists(tasks.filter(user_id=OuterRef("pk")))) | personal)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def users_in_category(request):
+    """Cuáles de estos perfiles tienen la categoría `category`. Así cualquier lista de
+    perfiles de la app (seguidores, likes, favoritos...) se filtra igual que las tareas.
+
+    POST {category: "Tema,Subtema", user_ids: [...]} -> {user_ids: [...]}"""
+    raw_ids = request.data.get("user_ids")
+    if not isinstance(raw_ids, list):
+        return Response({"user_ids": "Debes enviar una lista de ids."}, status=status.HTTP_400_BAD_REQUEST)
+    ids = []
+    for value in raw_ids[:USERS_IN_CATEGORY_LIMIT]:
+        try:
+            ids.append(UUID(str(value)))
+        except ValueError:
+            continue
+    users = filter_users_by_category(
+        User.objects.filter(id__in=ids), request.data.get("category"), viewer=request.user,
+    )
+    return Response({"user_ids": [str(pk) for pk in users.values_list("id", flat=True)]})
 
 
 def _follow_list(request, user_id, *, followers):
@@ -476,10 +591,14 @@ def _follow_list(request, user_id, *, followers):
     else:
         relations = ms.Follow.objects.filter(follower=target).select_related("following__profile")
         users = [relation.following for relation in relations.order_by("-created_at")[:FOLLOW_LIST_LIMIT]]
-    return Response({
+    payload = {
         "count": relations.count(),
         "users": SimpleUserSerializer(users, many=True, context={"request": request}).data,
-    })
+    }
+    if followers:
+        # Si quien consulta ya lo sigue (aunque no salga entre los primeros de la lista).
+        payload["viewer_follows"] = relations.filter(follower=request.user).exists()
+    return Response(payload)
 
 
 @api_view(["GET"])
@@ -683,6 +802,8 @@ _COMMENT_EXTRAS = (
 )
 TASK_SERIALIZER_PREFETCH = (
     *(f"user__{rel}" for rel in _USER_EXTRAS),
+    # Solo el autor de la tarea trae cuántos lo siguen (TaskAuthorSerializer).
+    "user__follower_relationships",
     "likes",
     "reposts",
     *(f"post_comments__created_by__{rel}" for rel in _USER_EXTRAS),
@@ -691,8 +812,12 @@ TASK_SERIALIZER_PREFETCH = (
     "post_comments__replies__replies__replies",
     *(f"post_comments__replies__created_by__{rel}" for rel in _USER_EXTRAS),
     "tagged_users__user",
+    "testimonial_for",
+    # Historias que comparten un testimonio (testimonial_story).
+    "story_source_task__testimonial_for",
     "podcast_invitations",
     "petition_supports",
+    "group",
     "subtasks",
     "subfactores",
     "subfuentes",
@@ -706,11 +831,21 @@ SHARED_TASK_PREFETCH = (
     "comments__replies",
     *(f"task__{rel}" for rel in TASK_SERIALIZER_PREFETCH),
 )
+# Lo que acompaña un post o respuesta: etiquetados y la publicación guardada (con su portada).
+_POST_EXTRAS = (
+    "tagged_users",
+    "aportacion__user",
+    "aportacion__subtasks",
+    "aportacion__subfactores",
+    "aportacion__subfuentes",
+)
 POST_PREFETCH = (
     *(f"user__{rel}" for rel in _USER_EXTRAS),
     "likes",
+    *_POST_EXTRAS,
     "forum_replies__likes",
     *(f"forum_replies__user__{rel}" for rel in _USER_EXTRAS),
+    *(f"forum_replies__{rel}" for rel in _POST_EXTRAS),
     "forum_replies__forum_replies",
 )
 
@@ -878,6 +1013,13 @@ class TaskListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(user=request.user)
+        if task.group_id:
+            # Del integrante: queda pendiente para los admins. Del admin: aprobada.
+            from .community_groups import submit_task
+            submit_task(task, request.user)
+        if task.testimonial_for_id:
+            # Testimonio: la persona del perfil decide si se muestra.
+            testimonials.submit_written_testimonial(task)
 
         # 2. PROCESAMIENTO DE ARRAYS (Usando el FOR seguro)
         
@@ -944,14 +1086,22 @@ class StoryListCreateView(generics.ListCreateAPIView):
             | (Q(subfuentes__image__isnull=False) & ~Q(subfuentes__image=""))
         )
 
+        # Los testimonios compartidos son solo texto (tarjeta con la cita).
+        media_filter |= Q(story_source_task__testimonial_for__isnull=False)
         return (
             ms.Task.objects.filter(
                 pch="historias",
                 created_at__gte=stories_window_start,
             )
             .filter(media_filter)
-            .annotate(views_count=Count("story_views", distinct=True))
-            .select_related("user")
+            .annotate(
+                views_count=Count("story_views", distinct=True),
+                viewed_by_me=Exists(ms.StoryView.objects.filter(
+                    story=OuterRef("pk"),
+                    viewer_id=getattr(self.request.user, "id", None),
+                )),
+            )
+            .select_related("user", "story_source_task__testimonial_for")
             .prefetch_related(*TASK_SERIALIZER_PREFETCH)
             .order_by("-created_at")
             .distinct()
@@ -1019,6 +1169,9 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         if was_hidden and not task.is_hidden:
             # Se publicó: ahora sí se avisa a quienes estaban etiquetados.
             notify_task_tags_on_publish(task)
+        if task.testimonial_for_id and task.user_id == self.request.user.id:
+            # Si quien lo escribió lo cambia, la persona del perfil vuelve a decidir.
+            testimonials.submit_written_testimonial(task)
         block_models = {
             "subtasks": ms.SubTask,
             "subfactores": ms.SubFactores,
@@ -1397,8 +1550,12 @@ def repost_task(request, task_id):
     sin crear un objeto SharedTask. Funciona como un interruptor (toggle).
     """
     try:
-        # Usamos select_for_update para bloquear la fila y evitar race conditions
-        task = visible_tasks_for(request.user).select_for_update().get(id=task_id)
+        # Primero se revisa que la pueda ver (eso cruza con su grupo) y luego se bloquea
+        # solo su fila: PostgreSQL no deja bloquear un LEFT JOIN ("FOR UPDATE cannot be
+        # applied to the nullable side of an outer join").
+        if not visible_tasks_for(request.user).filter(id=task_id).exists():
+            raise ms.Task.DoesNotExist
+        task = ms.Task.objects.select_for_update().get(id=task_id)
 
         repost_instance, created = ms.Repost.objects.get_or_create(user=request.user, task=task)
 
@@ -1420,6 +1577,7 @@ def repost_task(request, task_id):
             "user_has_liked": ms.Like.objects.filter(user=request.user, task=task, is_hidden=False).exists(),
             "likes_count": task.likes.count(),
             "interaction_score": task.interaction_score,
+            "reposts_count": task.reposts.count(),
         }, status=status.HTTP_200_OK)
 
     except ms.Task.DoesNotExist:
@@ -1438,6 +1596,12 @@ def share_task_to_story(request):
         return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     source_task = get_object_or_404(visible_tasks_for(request.user), id=source_task_id)
+    is_testimonial = bool(source_task.testimonial_for_id)
+    if is_testimonial and source_task.testimonial_status != TESTIMONIAL_APPROVED:
+        return Response(
+            {"error": "Solo se comparten testimonios que ya se muestran en el perfil."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     source_item = None
     if source_item_type and source_item_id:
@@ -1474,7 +1638,8 @@ def share_task_to_story(request):
     story_image = story_media.image if story_media and story_media.image else source_task.image
     story_video = story_media.video if story_media and story_media.video else source_task.video
 
-    if not story_image and not story_video:
+    # Un testimonio es solo texto: en la historia se ve como una tarjeta con la cita.
+    if not story_image and not story_video and not is_testimonial:
         return Response(
             {"error": "Solo se puede compartir a historia una tarea o subtarea con imagen o video."},
             status=status.HTTP_400_BAD_REQUEST,
@@ -1604,7 +1769,7 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         from datetime import timedelta
         from django.db.models import Count
         
-        qs = exclude_hidden_tasks(super().get_queryset(), prefix="task__")
+        qs = exclude_hidden_tasks(super().get_queryset(), prefix="task__", viewer=self.request.user)
         pch = self.request.query_params.get("pch")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
@@ -1823,11 +1988,34 @@ def favorite_collection(request, user_id=None):
     ).select_related("task").prefetch_related(
         *(f"task__{rel}" for rel in TASK_SERIALIZER_PREFETCH)
     )
+    # Guardadas que no son favoritas (las favoritas ya van en `tasks`).
+    saved = exclude_hidden_tasks(
+        ms.TaskSave.objects.filter(user=owner).exclude(task__favorited_by__user=owner),
+        request.user, prefix="task__",
+    ).select_related("task").prefetch_related(
+        *(f"task__{rel}" for rel in TASK_SERIALIZER_PREFETCH)
+    )
+    private_ids = task_saves.private_task_ids(owner)
     if not is_owner:
         if not profile.favorite_profiles_public:
             profiles = profiles.none()
+        # Las "solo para mí" nunca las ven los demás.
+        tasks = tasks.exclude(task_id__in=private_ids)
+        saved = saved.filter(is_private=False)
         if not profile.favorite_tasks_public:
             tasks = tasks.none()
+            saved = saved.none()
+    tasks = list(tasks.order_by("-is_pinned", "position", "created_at"))
+    pinned_categories = {}
+    for favorite_id, category in ms.TaskCategoryPin.objects.filter(
+        favorite_id__in=[item.id for item in tasks]
+    ).order_by("category").values_list("favorite_id", "category"):
+        pinned_categories.setdefault(favorite_id, []).append(category)
+    visible_favorites = {item.id for item in tasks}
+    category_pins = {
+        name: [str(favorite.id) for favorite in top if favorite.id in visible_favorites]
+        for name, top in task_saves.category_tops(owner).items()
+    }
     return Response({
         "profiles": [
             {
@@ -1844,9 +2032,23 @@ def favorite_collection(request, user_id=None):
                 "task": TaskSerializer(item.task, context={"request": request}).data,
                 "position": item.position,
                 "is_pinned": item.is_pinned,
+                "is_private": item.task_id in private_ids,
+                "categories": task_saves.task_categories(item.task),
+                "pinned_categories": pinned_categories.get(item.id, []),
             }
-            for item in tasks.order_by("-is_pinned", "position", "created_at")
+            for item in tasks
         ],
+        "saved": [
+            {
+                "id": str(item.id),
+                "task": TaskSerializer(item.task, context={"request": request}).data,
+                "is_private": item.is_private,
+                "saved_at": item.created_at,
+            }
+            for item in saved.order_by("-created_at")
+        ],
+        # Top 5 por categoría: {categoría: [id de favorito, ...]} en orden.
+        "category_pins": {name: ids for name, ids in category_pins.items() if ids},
         "visibility": {
             "profiles": profile.favorite_profiles_public if is_owner else bool(profile.favorite_profiles_public),
             "tasks": profile.favorite_tasks_public if is_owner else bool(profile.favorite_tasks_public),
@@ -1873,11 +2075,32 @@ def my_relations(request):
         favorites.append(str(perfil_id))
         if is_pinned:
             pinned.append(str(perfil_id))
+    # Tareas: Guardar -> Favorito -> Top 5 (y top 5 por categoría), para el menú de 3 puntos.
+    saved_tasks, private_tasks = [], []
+    for task_id, is_private in ms.TaskSave.objects.filter(user=request.user).values_list("task_id", "is_private"):
+        saved_tasks.append(str(task_id))
+        if is_private:
+            private_tasks.append(str(task_id))
+    favorite_tasks, pinned_tasks = [], []
+    for task_id, is_pinned in ms.Favorito.objects.filter(user=request.user).values_list("task_id", "is_pinned"):
+        favorite_tasks.append(str(task_id))
+        if is_pinned:
+            pinned_tasks.append(str(task_id))
+    task_category_pins = {}
+    for task_id, category in ms.TaskCategoryPin.objects.filter(favorite__user=request.user).values_list(
+        "favorite__task_id", "category"
+    ):
+        task_category_pins.setdefault(str(task_id), []).append(category)
     return Response({
         "me": str(request.user.id),
         "following": following,
         "favorites": favorites,
         "pinned": pinned,
+        "saved_tasks": saved_tasks,
+        "private_tasks": private_tasks,
+        "favorite_tasks": favorite_tasks,
+        "pinned_tasks": pinned_tasks,
+        "task_category_pins": task_category_pins,
     })
 
 
@@ -1929,11 +2152,13 @@ def toggle_favorite_pin(request):
             favorite.is_pinned = True
             ordered = pinned + [favorite] + unpinned
         else:
+            # Sale del top 5 y queda en el puesto 6: el que estaba ahí sube a ocupar su lugar.
             favorite.is_pinned = False
-            ordered.append(favorite)
+            ordered.insert(min(5, len(ordered)), favorite)
         for position, item in enumerate(ordered):
             item.position = position
-            item.is_pinned = position < 5
+            # Aunque haya 5 favoritos o menos, el que se acaba de desanclar no vuelve a anclarse.
+            item.is_pinned = position < 5 and (should_pin or item.pk != favorite.pk)
             item.save(update_fields=["is_pinned", "position"])
     if should_pin:
         target = favorite.perfil if kind == "profile" else favorite.task
@@ -1957,14 +2182,16 @@ def search_directory(request):
     scope = request.query_params.get("scope", "both")
     if not query:
         return Response({"profiles": [], "tasks": []})
-    profiles = User.objects.filter(
+    # Con la categoría elegida en el buscador, perfiles y tareas se filtran igual.
+    category = request.query_params.get("category")
+    profiles = filter_users_by_category(User.objects.filter(
         Q(username__icontains=query)
         | Q(first_name__icontains=query)
         | Q(last_name__icontains=query)
-    ).exclude(pk=request.user.pk)[:20] if scope in {"profiles", "both"} else []
-    tasks = exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.filter(
+    ).exclude(pk=request.user.pk), category, viewer=request.user)[:20] if scope in {"profiles", "both"} else []
+    tasks = filter_by_categories(exclude_hidden_tasks(exclude_testimonials(exclude_unsaved_stories(ms.Task.objects.filter(
         Q(title__icontains=query) | Q(description__icontains=query)
-    ))).select_related("user").prefetch_related(
+    ))), viewer=request.user), category, "categories").select_related("user").prefetch_related(
         *TASK_SERIALIZER_PREFETCH
     ).order_by("-created_at")[:20] if scope in {"tasks", "both"} else []
     return Response({
@@ -2323,14 +2550,20 @@ class FeedView(generics.ListAPIView):
 
         # ✅ COMPORTAMIENTO POR DEFECTO: Mostrar solo tareas originales.
         if sort_by != 'all':
-            tasks = exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.all())).annotate(
+            tasks = exclude_hidden_tasks(
+                exclude_testimonials(exclude_unsaved_stories(ms.Task.objects.all())), viewer=self.request.user,
+            ).annotate(
                 priority=user_priority
             ).select_related('user__profile').prefetch_related(*TASK_SERIALIZER_PREFETCH)
 
         # ✅ COMPORTAMIENTO PARA "all": Mostrar el feed unificado.
         else:
-            tasks = exclude_hidden_tasks(exclude_unsaved_stories(ms.Task.objects.all())).annotate(priority=user_priority).select_related('user__profile')
-            shared_tasks = exclude_hidden_tasks(ms.SharedTask.objects.all(), prefix="task__").annotate(priority=shared_by_priority).select_related('shared_by__profile', 'task__user__profile')
+            tasks = exclude_hidden_tasks(
+                exclude_testimonials(exclude_unsaved_stories(ms.Task.objects.all())), viewer=self.request.user,
+            ).annotate(priority=user_priority).select_related('user__profile')
+            shared_tasks = exclude_hidden_tasks(
+                ms.SharedTask.objects.all(), prefix="task__", viewer=self.request.user,
+            ).annotate(priority=shared_by_priority).select_related('shared_by__profile', 'task__user__profile')
 
             task_items = [
                 FeedItem(item=task, priority=task.priority, is_original=True)
@@ -2976,9 +3209,14 @@ class PostListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         qs = ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related(*POST_PREFETCH).order_by('-created_at')
         user_id = self.request.query_params.get('user')
-        if user_id and str(user_id).isdigit():
-            qs = qs.filter(user_id=int(user_id))
-        return qs
+        if user_id:
+            # Los ids de usuario son UUID ("Foro de <usuario>").
+            try:
+                qs = qs.filter(user_id=UUID(str(user_id)))
+            except ValueError:
+                qs = qs.none()
+        # Mismo filtro por niveles que las tareas: primero los de esa ruta exacta.
+        return filter_by_category_path(qs, self.request.query_params.get('category'))
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -3078,7 +3316,10 @@ class SharedTaskCommentListCreateView(generics.ListCreateAPIView):
             post=shared_task.task,
             created_by=self.request.user,
             text=shared_comment.text,
-            parent=original_parent
+            parent=original_parent,
+            # La copia lleva también la foto o video y la publicación guardada (mismo archivo).
+            attachment=shared_comment.attachment.name or None,
+            aportacion=shared_comment.aportacion,
         )
 
 

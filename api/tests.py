@@ -709,6 +709,20 @@ class StoryViewTrackingTests(TestCase):
         self.assertEqual(second.data["views_count"], 1)
         self.assertEqual(ms.StoryView.objects.filter(story=self.story).count(), 1)
 
+    def test_story_list_says_if_the_viewer_already_saw_it(self):
+        ms.Task.objects.filter(id=self.story.id).update(image="stories/vista.jpg")
+        list_url = reverse("story-list-create")
+
+        def viewed_by(user):
+            self.client.force_authenticate(user=user)
+            results = self.client.get(list_url).data["results"]
+            return next(item["viewed_by_me"] for item in results if str(item["id"]) == str(self.story.id))
+
+        self.assertFalse(viewed_by(self.viewer))
+        self.client.post(reverse("story-view", kwargs={"story_id": self.story.id}))
+        self.assertTrue(viewed_by(self.viewer))
+        self.assertFalse(viewed_by(self.other))
+
     def test_owner_view_is_not_recorded(self):
         self.client.force_authenticate(user=self.owner)
 

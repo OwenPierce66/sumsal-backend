@@ -10,8 +10,10 @@ from rest_framework_simplejwt.views import (
 from . import push_views
 from . import subscription_views
 from . import petition_support_views
+from . import group_views
 from . import user_badges
 from . import testimonials
+from . import task_save_views
 # ─── Vistas JWT con throttling propio ────────────────────────────────────────
 class ThrottledLoginView(TokenObtainPairView):
     throttle_classes = [ts.LoginThrottle]
@@ -42,6 +44,7 @@ urlpatterns = [
     path('testimonials/<uuid:pk>/', testimonials.testimonial_detail, name='testimonial-detail'),
     path('users/<uuid:user_id>/social/', views.user_social_stats, name='user-social-stats'),
     path('users/<uuid:user_id>/follow/', views.toggle_user_follow, name='user-follow-toggle'),
+    path('users/in-category/', views.users_in_category, name='users-in-category'),
     path('users/<uuid:user_id>/followers/', views.user_followers, name='user-followers'),
     path('users/<uuid:user_id>/following/', views.user_following, name='user-following'),
     path('users/<uuid:user_id>/favorited-by/', views.user_favorited_by, name='user-favorited-by'),
@@ -68,6 +71,8 @@ urlpatterns = [
     path('tasks/<uuid:task_id>/tags/', views.sync_task_tags, name='task-tags'),
     path('tasks/<uuid:task_id>/support/', petition_support_views.petition_support_checkout, name='petition-support-checkout'),
     path('tasks/<uuid:task_id>/supporters/', petition_support_views.petition_supporters, name='petition-supporters'),
+    path('petition-supports/', petition_support_views.my_petition_supports, name='petition-support-list'),
+    path('petition-supports/users/<uuid:user_id>/', petition_support_views.user_petition_supports, name='petition-support-user-list'),
     path('petition-supports/checkout/done/', petition_support_views.petition_support_checkout_done, name='petition-support-checkout-done'),
     path('petition-supports/<uuid:pk>/sync/', petition_support_views.petition_support_sync, name='petition-support-sync'),
     path('tasks/<uuid:task_id>/approve/', views.toggle_task_approval, name='task-approve'),
@@ -108,6 +113,11 @@ urlpatterns = [
     path('favorites/collection/', views.favorite_collection, name='favorite-collection'),
     path('favorites/collection/<uuid:user_id>/', views.favorite_collection, name='favorite-collection-user'),
     path('favorites/pin/', views.toggle_favorite_pin, name='favorite-pin'),
+    # Guardar -> Favorito -> Top 5 (general y por categoría)
+    path('tasks/<uuid:task_id>/save/', task_save_views.task_save, name='task-save'),
+    path('favorites/category-pin/', task_save_views.task_category_pin, name='favorite-category-pin'),
+    path('favorites/top/', task_save_views.favorites_top, name='favorites-top'),
+    path('favorites/top/<uuid:user_id>/', task_save_views.favorites_top, name='favorites-top-user'),
     path('search/directory/', views.search_directory, name='directory-search'),
 
     # Categorías
@@ -142,10 +152,21 @@ urlpatterns = [
     path('push-tokens/', push_views.PushTokenView.as_view(), name='push-token-register'),  # ← agregar en urlpatterns
 
     # ─── Suscripciones (Stripe) ──────────────────────────────────────────────
+    # Grupos (comunidades con publicaciones revisadas por sus admins)
+    path('groups/', group_views.group_list_create, name='group-list'),
+    path('groups/<uuid:group_id>/', group_views.group_detail, name='group-detail'),
+    path('groups/<uuid:group_id>/join/', group_views.group_join, name='group-join'),
+    path('groups/<uuid:group_id>/leave/', group_views.group_leave, name='group-leave'),
+    path('groups/<uuid:group_id>/members/', group_views.group_members, name='group-members'),
+    path('groups/<uuid:group_id>/members/<uuid:user_id>/', group_views.group_member_detail, name='group-member-detail'),
+    path('groups/<uuid:group_id>/tasks/', group_views.group_tasks, name='group-tasks'),
+    path('groups/<uuid:group_id>/tasks/pending/', group_views.group_pending_tasks, name='group-pending-tasks'),
+    path('groups/<uuid:group_id>/tasks/<uuid:task_id>/review/', group_views.group_task_review, name='group-task-review'),
     path('subscriptions/', subscription_views.my_subscriptions, name='subscription-list'),
     path('subscriptions/checkout/', subscription_views.subscription_checkout, name='subscription-checkout'),
     path('subscriptions/checkout/done/', subscription_views.subscription_checkout_done, name='subscription-checkout-done'),
     path('subscriptions/webhook/', subscription_views.stripe_webhook, name='subscription-webhook'),
+    path('subscriptions/users/<uuid:user_id>/', subscription_views.user_subscriptions, name='subscription-user-list'),
     path('subscriptions/status/<uuid:user_id>/', subscription_views.subscription_status, name='subscription-status'),
     path('subscriptions/<uuid:pk>/', subscription_views.subscription_detail, name='subscription-detail'),
     path('subscriptions/<uuid:pk>/sync/', subscription_views.subscription_sync, name='subscription-sync'),
