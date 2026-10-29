@@ -510,6 +510,8 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 5 * 60  # 5 minutos máximo por tarea
+# Si Redis aún no está listo al arrancar el worker, que reintente (comportamiento de siempre).
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 
 # En tests automatizados ejecutamos las tareas de forma síncrona
 if "test" in sys.argv:
