@@ -117,6 +117,10 @@ class Profile(TimeStampedModel):
         _("show recommendations"), default=True,
         help_text=_("Si es falso, otros no ven las recomendaciones que recibió ni las que dio."),
     )
+    # Actividad que cada quien decide si se ve en su perfil (ver profile_activity.py).
+    verifications_public = models.BooleanField(_("show verifications"), default=True)
+    likes_public = models.BooleanField(_("show liked posts"), default=False)
+    comments_public = models.BooleanField(_("show comments history"), default=False)
     language = models.CharField(
         _("language"), max_length=10, default="es",
         help_text=_("Idioma al que el traductor de mensajes traduce para esta persona."),
@@ -133,6 +137,23 @@ class Profile(TimeStampedModel):
 
     def __str__(self):
         return f"Profile for {self.user.email}"
+
+
+class UserVerification(TimeStampedModel):
+    """Quién verificó a quién (la marca es `Profile.is_verified`; esto es el historial
+    que se puede mostrar en el perfil de ambos)."""
+    verifier = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="verifications_given",
+    )
+    verified = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="verifications_received",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["verifier", "verified"], name="unique_user_verification"),
+        ]
 
 
 class UserRecommendation(TimeStampedModel):

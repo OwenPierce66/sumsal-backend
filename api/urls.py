@@ -13,6 +13,8 @@ from . import petition_support_views
 from . import group_views
 from . import user_badges
 from . import testimonials
+from . import profile_activity
+from . import task_stats
 from . import task_save_views
 # ─── Vistas JWT con throttling propio ────────────────────────────────────────
 class ThrottledLoginView(TokenObtainPairView):
@@ -49,6 +51,7 @@ urlpatterns = [
     path('users/<uuid:user_id>/following/', views.user_following, name='user-following'),
     path('users/<uuid:user_id>/favorited-by/', views.user_favorited_by, name='user-favorited-by'),
     path('users/<uuid:user_id>/recommendations/', views.user_recommendations, name='user-recommendations'),
+    path('users/<uuid:user_id>/activity/', profile_activity.user_activity, name='user-activity'),
     path('users/<uuid:user_id>/portadas/', views.obtener_portadas_usuario, name='user-portadas'),
     path('users/<uuid:user_id>/imagen-fija/', views.obtener_imagen_fija_usuario, name='user-imagen-fija'),
     path('user-details/', views.get_user_details, name='user-details'),
@@ -65,6 +68,7 @@ urlpatterns = [
     path('feed/', views.FeedView.as_view(), name='feed'),
     path('tasks/<uuid:id>/', views.TaskDetailView.as_view(), name='task-detail'),
     path('tasks/<uuid:task_id>/like/', views.toggle_task_like, name='task-like'),
+    path('tasks/<uuid:task_id>/stats/', task_stats.task_stats, name='task-stats'),
     path('tasks/<uuid:task_id>/repost/', views.repost_task, name='task-repost'), # ✅ ¡AQUÍ ESTÁ!
     path('tasks/<uuid:task_id>/users-who-liked/', views.users_who_liked_task, name='task-likers'),
     path('tasks/<uuid:task_id>/users-who-shared/', views.users_who_shared_task, name='task-sharers'),

@@ -815,6 +815,10 @@ TASK_SERIALIZER_PREFETCH = (
     "testimonial_for",
     # Historias que comparten un testimonio (testimonial_story).
     "story_source_task__testimonial_for",
+    # Citas: dónde la adjuntaron (citations_count).
+    "aportacion_comments",
+    "forum_aportaciones",
+    "shared_comment_aportaciones",
     "podcast_invitations",
     "petition_supports",
     "group",
@@ -2637,8 +2641,16 @@ class FeedView(generics.ListAPIView):
 def admin_verify_user(request, user_id):
     if not request.user.is_superuser: return Response(status=403)
     user = get_object_or_404(User, id=user_id)
-    user.profile.is_verified = bool(request.data.get("is_verified", True))
-    user.profile.save()
+    is_verified = bool(request.data.get("is_verified", True))
+    with transaction.atomic():
+        user.profile.is_verified = is_verified
+        user.profile.save()
+        # Queda registrado quién lo verificó (se puede ver en la actividad de ambos).
+        if request.user.id != user.id:
+            if is_verified:
+                ms.UserVerification.objects.get_or_create(verifier=request.user, verified=user)
+            else:
+                ms.UserVerification.objects.filter(verified=user).delete()
     return Response({"is_verified": user.profile.is_verified})
 
 @api_view(["POST"])

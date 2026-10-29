@@ -724,6 +724,8 @@ class TaskSerializer(serializers.ModelSerializer):
     # Cuántas personas la impulsaron (el número junto al botón de impulsar). No es
     # `interaction_score`, que también sube al compartir.
     reposts_count = serializers.SerializerMethodField()
+    # Cuántas veces la adjuntaron en comentarios, el foro o compartidas ("citada").
+    citations_count = serializers.SerializerMethodField()
     comments_count = serializers.SerializerMethodField()
     # ✅ FIX: Especificamos que el campo 'comments' debe leer de la relación 'post_comments' del modelo Task.
     comments = NewPeticionCommentSerializer(source='post_comments', many=True, read_only=True)
@@ -1061,6 +1063,12 @@ class TaskSerializer(serializers.ModelSerializer):
 
     def get_reposts_count(self, obj):
         return related_count(obj, "reposts")
+
+    def get_citations_count(self, obj):
+        return sum(
+            related_count(obj, relation)
+            for relation in ("aportacion_comments", "forum_aportaciones", "shared_comment_aportaciones")
+        )
 
     def get_user_has_reposted(self, obj):
         request = self.context.get("request")
