@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from api import models as ms
 from api.views import SharedTaskListCreateView
 from api.serializers import SimpleUserSerializer, SharedTaskSerializer, TaskSerializer
-from Sumsal_Backend.storage_backends import SupabaseStorage
+from Aportaciones_Backend.storage_backends import SupabaseStorage
 
 User = get_user_model()
 

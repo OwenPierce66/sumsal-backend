@@ -18,15 +18,15 @@ msgstr ""
 "Plural-Forms: nplurals=3; plural=n == 1 ? 0 : n != 0 && n % 1000000 == 0 ? "
 "1 : 2;\n"
 
-#: Sumsal_Backend/settings.py:164
+#: Aportaciones_Backend/settings.py:164
 msgid "English"
 msgstr "Inglés"
 
-#: Sumsal_Backend/settings.py:165
+#: Aportaciones_Backend/settings.py:165
 msgid "Spanish"
 msgstr "Español"
 
-#: Sumsal_Backend/settings.py:166
+#: Aportaciones_Backend/settings.py:166
 msgid "French"
 msgstr "Francés"
 

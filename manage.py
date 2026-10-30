@@ -13,7 +13,7 @@ load_dotenv(env_path)
 
 def main():
     """Run administrative tasks."""
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Sumsal_Backend.settings")
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Aportaciones_Backend.settings")
     try:
         from django.core.management import execute_from_command_line
     except ImportError as exc:

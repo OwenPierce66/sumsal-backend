@@ -1,8 +1,8 @@
-# ✅ INTEGRACIÓN LEBARON → SUMSAL COMPLETADA
+# ✅ INTEGRACIÓN LEBARON → APORTACIONES COMPLETADA
 
 ## RESUMEN EJECUTIVO
 
-Se ha integrado exitosamente la parte intermedia del código antiguo (lebaron) al nuevo Sumsal_Backend, manteniendo la estructura moderna y limpia de Sumsal.
+Se ha integrado exitosamente la parte intermedia del código antiguo (lebaron) al nuevo Aportaciones_Backend, manteniendo la estructura moderna y limpia de Aportaciones.
 
 **Total implementado:** 14 modelos + 30+ endpoints + 12 serializers + admin completo
 
@@ -199,7 +199,7 @@ Registrados **14 ModelAdmin**:
 
 ### 1. Crear y aplicar migraciones
 ```bash
-cd c:\Users\owenf\Desktop\sumsal\sumsal-backend
+cd c:\Users\owenf\Desktop\aportaciones\aportaciones-backend
 python manage.py makemigrations api
 python manage.py migrate
 ```
@@ -240,13 +240,13 @@ python manage.py runserver
 
 2. **Timestamps**: Todos los modelos tienen `created_at`, `updated_at` automáticos (TimeStampedModel)
 
-3. **User Model**: Sigue siendo con `email` como USERNAME_FIELD (como Sumsal original)
+3. **User Model**: Sigue siendo con `email` como USERNAME_FIELD (como Aportaciones original)
 
 4. **Paginación**: StandardPagination (10/página) y CommentPagination (10/página)
 
 5. **Permisos**: IsAuthenticated por defecto, AllowAny donde aplica
 
-6. **Estructura**: Completamente integrada en la app `api` de Sumsal
+6. **Estructura**: Completamente integrada en la app `api` de Aportaciones
 
 ---
 

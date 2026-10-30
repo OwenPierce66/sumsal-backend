@@ -1,5 +1,5 @@
 """
-ASGI config for Sumsal_Backend project.
+ASGI config for Aportaciones_Backend project.
 
 It exposes the ASGI callable as a module-level variable named ``application``.
 
@@ -11,6 +11,6 @@ import os
 
 from django.core.asgi import get_asgi_application
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Sumsal_Backend.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Aportaciones_Backend.settings")
 
 application = get_asgi_application()

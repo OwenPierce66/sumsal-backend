@@ -57,7 +57,7 @@ services:
   celery-worker:
     image: aportaciones-backend-django:latest
     container_name: celery-worker
-    command: celery -A Sumsal_Backend worker -l INFO --concurrency=2
+    command: celery -A Aportaciones_Backend worker -l INFO --concurrency=2
     depends_on:
       db:
         condition: service_healthy
@@ -90,7 +90,7 @@ services:
 volumes:
   postgres_data:
     external: true
-    name: sumsal-backend_postgres_data
+    name: aportaciones-backend_postgres_data
   redis_data:
     external: true
-    name: sumsal-backend_redis_data
+    name: aportaciones-backend_redis_data

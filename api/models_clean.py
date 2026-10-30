@@ -40,7 +40,7 @@ def file_to_abs_url(file_or_str, request=None):
     return url
 
 # ============================================================================
-# SERIALIZERS DE USUARIO Y PERFIL (Sumsal Sync)
+# SERIALIZERS DE USUARIO Y PERFIL (Aportaciones Sync)
 # ============================================================================
 
 class ProfileSerializer(serializers.ModelSerializer):

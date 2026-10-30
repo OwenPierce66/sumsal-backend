@@ -1,7 +1,7 @@
 # models.py
 from django.db import models
 from django.conf import settings
-from Sumsal_Backend.storage_backends import ImagenText, VideoStorage  # Asegúrate de que los imports de storage sean correctos
+from Aportaciones_Backend.storage_backends import ImagenText, VideoStorage  # Asegúrate de que los imports de storage sean correctos
 
 
 class Message(models.Model):

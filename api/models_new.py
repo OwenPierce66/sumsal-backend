@@ -7,7 +7,7 @@ from django.utils.translation import gettext_lazy as _
 
 # Importar storages del código antiguo
 try:
-    from Sumsal_Backend.storage_backends import ImagenText, VideoStorage
+    from Aportaciones_Backend.storage_backends import ImagenText, VideoStorage
 except ImportError:
     # Fallback si no existe
     from django.core.files.storage import default_storage
@@ -88,7 +88,7 @@ class Profile(models.Model):
         return _("Profile for %(email)s") % {'email': self.user.email}
 
 
-# Modelos del código antiguo adaptados a Sumsal
+# Modelos del código antiguo adaptados a Aportaciones
 class Task(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.CASCADE)
     title = models.CharField(max_length=1000, blank=True, default='')

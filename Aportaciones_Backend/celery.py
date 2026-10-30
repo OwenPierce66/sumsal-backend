@@ -1,5 +1,5 @@
 """
-Sumsal_Backend/celery.py
+Aportaciones_Backend/celery.py
 
 Punto de entrada de Celery para la aplicación Django.
 Lee la configuración desde django.conf:settings usando el prefijo CELERY_.
@@ -7,9 +7,9 @@ Lee la configuración desde django.conf:settings usando el prefijo CELERY_.
 import os
 from celery import Celery
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Sumsal_Backend.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "Aportaciones_Backend.settings")
 
-app = Celery("Sumsal_Backend")
+app = Celery("Aportaciones_Backend")
 
 # Lee toda la configuración de settings.py que empiece con CELERY_
 # Ej: CELERY_BROKER_URL -> broker_url
