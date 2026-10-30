@@ -51,6 +51,11 @@ from .notifications import retire_notification, create_notification
 from .signals import notify_task_tags_on_publish
 from . import task_saves
 from . import testimonials
+from .social_links import clean_social_links
+from .forum_access import can_view_post, visible_forum_posts
+from .task_series import sync_series_links
+from .view_as import can_view_feed_of, feed_owner, followed_ids
+from .profile_visits import visit_counts
 from itertools import chain
 from massaging.models import Message
 from . import throttling as ts
@@ -270,6 +275,11 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
     queryset = exclude_hidden_tasks(
         queryset, request_user if viewing_own_profile else None, viewer=request_user,
     )
+    # Ver como otra persona (?as_user=): lo que publican quienes sigue, con mis permisos.
+    view_as = feed_owner(params, request_user)
+    relation_user = view_as or request_user
+    if view_as is not None:
+        queryset = queryset.filter(user_id__in=followed_ids(view_as))
     if owner_id:
         queryset = queryset.filter(user_id=owner_id)
     if pch:
@@ -305,10 +315,10 @@ def apply_task_filters(queryset, params, owner_id=None, request_user=None, categ
             queryset = queryset.filter(favorited_by__user_id=owner_id)
         elif request_user and request_user.is_authenticated:
             queryset = queryset.filter(favorited_by__user=request_user)
-    if favorite_users_only in ["true", "1", "True", True] and request_user and request_user.is_authenticated:
-        queryset = queryset.filter(user__profile_favorites_received__user=request_user).distinct()
-    if params.get("followed_users_only") in ["true", "1", "True", True] and request_user and request_user.is_authenticated:
-        queryset = queryset.filter(user__follower_relationships__follower=request_user).distinct()
+    if favorite_users_only in ["true", "1", "True", True] and relation_user and relation_user.is_authenticated:
+        queryset = queryset.filter(user__profile_favorites_received__user=relation_user).distinct()
+    if params.get("followed_users_only") in ["true", "1", "True", True] and relation_user and relation_user.is_authenticated:
+        queryset = queryset.filter(user__follower_relationships__follower=relation_user).distinct()
     if verified_users_only in ["true", "1", "True", True]:
         queryset = queryset.filter(user__profile__is_verified=True)
     if recommended_users_only in ["true", "1", "True", True]:
@@ -439,7 +449,10 @@ class UserMeView(APIView):
 
     def get(self, request):
         serializer = SimpleUserSerializer(request.user, context={'request': request})
-        return Response(serializer.data)
+        data = dict(serializer.data)
+        profile = getattr(request.user, "profile", None)
+        data["social_links"] = getattr(profile, "social_links", None) or {}
+        return Response(data)
 
     def patch(self, request, *args, **kwargs):
         """
@@ -454,6 +467,17 @@ class UserMeView(APIView):
         # el archivo después de que Django ya lo haya consumido.
         profile_data = request.data.copy()
         profile_data.pop('user_image', None)
+        # Redes sociales: llegan como JSON (en multipart, como texto).
+        social_links = profile_data.pop('social_links', None)
+        if isinstance(social_links, list):
+            social_links = social_links[0] if social_links else None
+        if isinstance(social_links, str):
+            try:
+                social_links = json.loads(social_links) if social_links.strip() else {}
+            except ValueError:
+                raise ValidationError({"social_links": "No es un JSON válido."})
+        if social_links is not None:
+            social_links = clean_social_links(social_links)
 
         with transaction.atomic():
             serializer = UserSerializer(
@@ -466,8 +490,17 @@ class UserMeView(APIView):
             serializer.save()
             if image_file:
                 ms.ImagenFija.objects.create(user=user, image=image_file)
+            if social_links is not None:
+                profile, _ = ms.Profile.objects.get_or_create(user=user)
+                profile.social_links = social_links
+                profile.save(update_fields=["social_links", "updated_at"])
 
-        return Response(SimpleUserSerializer(user, context={'request': request}).data)
+        data = dict(SimpleUserSerializer(user, context={'request': request}).data)
+        # Recién guardadas (el perfil del usuario puede venir en caché).
+        data["social_links"] = (
+            ms.Profile.objects.filter(user=user).values_list("social_links", flat=True).first() or {}
+        )
+        return Response(data)
 
 
 @api_view(["GET"])
@@ -500,6 +533,27 @@ def user_social_stats(request, user_id):
             not is_owner
             and ms.pFavorito.objects.filter(user=request.user, perfil=target).exists()
         ),
+        # Publicaciones que quien consulta puede ver (sin testimonios ni historias sin guardar).
+        "posts_count": exclude_hidden_tasks(
+            exclude_testimonials(exclude_unsaved_stories(ms.Task.objects.filter(user=target))),
+            request.user if is_owner else None, viewer=request.user,
+        ).count(),
+        "profile_likes_count": ms.LikeP.objects.filter(profile=target).count(),
+        "testimonials_count": (
+            ms.CommentTag.objects.filter(user=target, status=ms.CommentTag.STATUS_APPROVED).count()
+            + ms.Task.objects.filter(testimonial_for=target, testimonial_status=TESTIMONIAL_APPROVED).count()
+        ),
+        # None si las mantiene ocultas (y no es su dueño).
+        "recommendations_count": (
+            ms.UserRecommendation.objects.filter(recommended=target).count()
+            if is_owner or getattr(profile, "recommendations_public", True) else None
+        ),
+        "social_links": getattr(profile, "social_links", None) or {},
+        # Ver como esta persona (su feed): si lo permite; su dueño ve su interruptor.
+        "can_view_feed": not is_owner and can_view_feed_of(request.user, target),
+        "feed_public": bool(getattr(profile, "feed_public", False)) if is_owner else None,
+        # Visitas al perfil (últimos 30 días): solo su dueño las ve.
+        "visits_30d": visit_counts(target)["visits_30d"] if is_owner else None,
     }
     if request.user.is_superuser:
         # Solo el superadmin ve el estado de la cuenta, para el menu de moderacion del perfil.
@@ -851,6 +905,7 @@ POST_PREFETCH = (
     *(f"forum_replies__user__{rel}" for rel in _USER_EXTRAS),
     *(f"forum_replies__{rel}" for rel in _POST_EXTRAS),
     "forum_replies__forum_replies",
+    "invited_users",
 )
 
 
@@ -1024,6 +1079,7 @@ class TaskListCreateView(generics.ListCreateAPIView):
         if task.testimonial_for_id:
             # Testimonio: la persona del perfil decide si se muestra.
             testimonials.submit_written_testimonial(task)
+        sync_series_links(task)
 
         # 2. PROCESAMIENTO DE ARRAYS (Usando el FOR seguro)
         
@@ -1137,6 +1193,10 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = ms.Task.objects.all()
     serializer_class = TaskSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_serializer_context(self):
+        # En el detalle se muestran el anterior y el siguiente recomendado.
+        return {**super().get_serializer_context(), "with_series": True}
     throttle_classes = [ts.UploadThrottle, ts.SustainedThrottle]
     lookup_field = "id"
 
@@ -1169,7 +1229,11 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         ):
             raise PermissionDenied("No tienes permiso para editar esta tarea.")
         was_hidden = serializer.instance.is_hidden
+        before_next_id = serializer.instance.next_task_id
+        before_previous_id = serializer.instance.previous_task_id
         task = serializer.save()
+        # Anterior / siguiente: el enlace se refleja en la otra publicación si es suya.
+        sync_series_links(task, before_next_id, before_previous_id)
         if was_hidden and not task.is_hidden:
             # Se publicó: ahora sí se avisa a quienes estaban etiquetados.
             notify_task_tags_on_publish(task)
@@ -1774,6 +1838,12 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
         from django.db.models import Count
         
         qs = exclude_hidden_tasks(super().get_queryset(), prefix="task__", viewer=self.request.user)
+        # Ver como otra persona (?as_user=): lo que comparten o publican quienes sigue.
+        view_as = feed_owner(self.request.query_params, self.request.user)
+        relation_user = view_as or self.request.user
+        if view_as is not None:
+            following = followed_ids(view_as)
+            qs = qs.filter(Q(shared_by_id__in=following) | Q(task__user_id__in=following))
         pch = self.request.query_params.get("pch")
         date_filter = self.request.query_params.get("date_filter")
         category = self.request.query_params.get("category")
@@ -1821,12 +1891,12 @@ class SharedTaskListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(task__favorited_by__user=self.request.user)
 
         if favorite_users_only in ['true', '1', 'True', True]:
-            qs = qs.filter(Q(shared_by__profile_favorites_received__user=self.request.user) | Q(task__user__profile_favorites_received__user=self.request.user)).distinct()
+            qs = qs.filter(Q(shared_by__profile_favorites_received__user=relation_user) | Q(task__user__profile_favorites_received__user=relation_user)).distinct()
 
         if self.request.query_params.get("followed_users_only") in ['true', '1', 'True', True]:
             qs = qs.filter(
-                Q(shared_by__follower_relationships__follower=self.request.user)
-                | Q(task__user__follower_relationships__follower=self.request.user)
+                Q(shared_by__follower_relationships__follower=relation_user)
+                | Q(task__user__follower_relationships__follower=relation_user)
             ).distinct()
 
         if verified_users_only in ['true', '1', 'True', True]:
@@ -2179,13 +2249,46 @@ def toggle_favorite_pin(request):
     return Response({"id": str(favorite.id), "is_pinned": favorite.is_pinned, "position": favorite.position})
 
 
+SUGGESTED_PROFILES_LIMIT = 30
+
+
+def suggested_profiles(user):
+    """A quién sugerir antes de buscar: a quien sigues y quien te sigue (lo más reciente
+    primero) y, si son pocos, otras cuentas recientes."""
+    ids = []
+    for pk in chain(
+        ms.Follow.objects.filter(follower=user).order_by("-created_at").values_list("following_id", flat=True)[:SUGGESTED_PROFILES_LIMIT],
+        ms.Follow.objects.filter(following=user).order_by("-created_at").values_list("follower_id", flat=True)[:SUGGESTED_PROFILES_LIMIT],
+    ):
+        if pk != user.pk and pk not in ids:
+            ids.append(pk)
+    ids = ids[:SUGGESTED_PROFILES_LIMIT]
+    if len(ids) < SUGGESTED_PROFILES_LIMIT:
+        ids += list(
+            User.objects.filter(is_active=True).exclude(pk__in=[user.pk, *ids])
+            .order_by("-date_joined").values_list("pk", flat=True)[: SUGGESTED_PROFILES_LIMIT - len(ids)]
+        )
+    by_id = {u.pk: u for u in User.objects.filter(pk__in=ids, is_active=True).select_related("profile")}
+    return [by_id[pk] for pk in ids if pk in by_id]
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def search_directory(request):
     query = " ".join(str(request.query_params.get("q", "")).split())
     scope = request.query_params.get("scope", "both")
     if not query:
-        return Response({"profiles": [], "tasks": []})
+        # Sin texto: sugerencias (perfiles al etiquetar; tus publicaciones recientes al
+        # elegir el "siguiente recomendado").
+        profiles = suggested_profiles(request.user) if scope == "profiles" else []
+        tasks = exclude_hidden_tasks(
+            exclude_testimonials(exclude_unsaved_stories(ms.Task.objects.filter(user=request.user))),
+            request.user, viewer=request.user,
+        ).select_related("user").prefetch_related(*TASK_SERIALIZER_PREFETCH).order_by("-created_at")[:20] if scope == "tasks" else []
+        return Response({
+            "profiles": SimpleUserSerializer(profiles, many=True, context={"request": request}).data,
+            "tasks": TaskSerializer(tasks, many=True, context={"request": request}).data,
+        })
     # Con la categoría elegida en el buscador, perfiles y tareas se filtran igual.
     category = request.query_params.get("category")
     profiles = filter_users_by_category(User.objects.filter(
@@ -2386,6 +2489,7 @@ def saved_filter_detail(request, pk):
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticatedOrReadOnly])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def new_category_list_create(request):
     if request.method == "GET":
         pch = (request.query_params.get("pch") or "").strip()
@@ -2415,7 +2519,7 @@ def new_category_list_create(request):
         include_approval = request.query_params.get("include_approval") in ["true", "1", "True"]
         if not include_approval and not request.user.is_staff and not request.user.is_superuser:
             qs = qs.exclude(name__iexact=ms.APPROVED_TAG)
-        serializer = NewCategorySerializer(qs, many=True)
+        serializer = NewCategorySerializer(qs, many=True, context={"request": request})
         return Response(serializer.data)
     if not (request.user.is_staff or request.user.is_superuser): return Response(status=403)
     serializer = NewCategorySerializer(data=request.data, context={"request": request})
@@ -2424,8 +2528,9 @@ def new_category_list_create(request):
         return Response(serializer.data, status=201)
     return Response(serializer.errors, status=400)
 
-@api_view(["GET", "PUT", "DELETE"])
+@api_view(["GET", "PUT", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
 def new_category_detail(request, pk):
     cat = ms.NewCategory.objects.filter(pk=pk).first()
     if cat is None:
@@ -2433,10 +2538,13 @@ def new_category_detail(request, pk):
             {"detail": f"La categoría {pk} no existe en esta base de datos."},
             status=404,
         )
-    if request.method == "GET": return Response(NewCategorySerializer(cat).data)
+    if request.method == "GET": return Response(NewCategorySerializer(cat, context={"request": request}).data)
     if not (request.user.is_staff or request.user.is_superuser): return Response(status=403)
-    if request.method == "PUT":
-        serializer = NewCategorySerializer(cat, data=request.data, context={"request": request})
+    if request.method in ("PUT", "PATCH"):
+        # PATCH: solo lo que viene (p. ej. la imagen o la descripción).
+        serializer = NewCategorySerializer(
+            cat, data=request.data, partial=request.method == "PATCH", context={"request": request},
+        )
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data)
@@ -3219,7 +3327,18 @@ class PostListCreateView(generics.ListCreateAPIView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
-        qs = ms.Postt.objects.filter(parent__isnull=True).select_related("user").prefetch_related(*POST_PREFETCH).order_by('-created_at')
+        qs = ms.Postt.objects.filter(parent__isnull=True).select_related("user", "group").prefetch_related(*POST_PREFETCH).order_by('-created_at')
+        # Foro de un grupo (?group=<id>) o el foro general (sin grupo).
+        group_id = self.request.query_params.get('group')
+        if group_id:
+            try:
+                qs = qs.filter(group_id=UUID(str(group_id)))
+            except ValueError:
+                qs = qs.none()
+        else:
+            qs = qs.filter(group__isnull=True)
+        # Solo lo que puede ver: seguidores, suscriptores, invitados, grupos privados.
+        qs = visible_forum_posts(qs, self.request.user)
         user_id = self.request.query_params.get('user')
         if user_id:
             # Los ids de usuario son UUID ("Foro de <usuario>").
@@ -3241,7 +3360,13 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        return super().get_queryset().select_related("user").prefetch_related(*POST_PREFETCH)
+        return super().get_queryset().select_related("user", "group").prefetch_related(*POST_PREFETCH)
+
+    def get_object(self):
+        post = super().get_object()
+        if not can_view_post(post, self.request.user):
+            raise NotFound()
+        return post
 
     def perform_update(self, serializer):
         # 🛡️ SEGURIDAD: solo el autor (o staff) puede editar el post
@@ -3259,6 +3384,8 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
 @permission_classes([IsAuthenticated])
 def toggle_post_like(request, post_id):
     post = get_object_or_404(ms.Postt, id=post_id)
+    if not can_view_post(post, request.user):
+        raise NotFound()
     like, created = ms.LikePostt.objects.get_or_create(user=request.user, post=post)
     if not created:
         like.delete()

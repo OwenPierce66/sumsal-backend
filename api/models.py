@@ -117,10 +117,14 @@ class Profile(TimeStampedModel):
         _("show recommendations"), default=True,
         help_text=_("Si es falso, otros no ven las recomendaciones que recibió ni las que dio."),
     )
-    # Actividad que cada quien decide si se ve en su perfil (ver profile_activity.py).
-    verifications_public = models.BooleanField(_("show verifications"), default=True)
-    likes_public = models.BooleanField(_("show liked posts"), default=False)
-    comments_public = models.BooleanField(_("show comments history"), default=False)
+    # Redes sociales: {red: usuario, enlace o número} (ver social_links.py).
+    social_links = models.JSONField(_("social links"), default=dict, blank=True)
+    # Quién ve cada tipo de tu actividad: {tipo: private|subscribers|public} (ver profile_activity.py).
+    activity_levels = models.JSONField(_("activity visibility"), default=dict, blank=True)
+    # Permitir que otros vean la app "como yo": mi feed (ver view_as.py).
+    feed_public = models.BooleanField(_("let others view my feed"), default=False)
+    # Visitar perfiles sin aparecer en sus visitas (ver profile_visits.py).
+    anonymous_visits = models.BooleanField(_("visit profiles anonymously"), default=False)
     language = models.CharField(
         _("language"), max_length=10, default="es",
         help_text=_("Idioma al que el traductor de mensajes traduce para esta persona."),
@@ -137,6 +141,29 @@ class Profile(TimeStampedModel):
 
     def __str__(self):
         return f"Profile for {self.user.email}"
+
+
+class ProfileVisit(models.Model):
+    """Visitas a un perfil: una fila por visitante y día, con cuántas veces entró
+    (ver profile_visits.py). `anonymous`: visitó en modo anónimo (no aparece)."""
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_visits_received",
+    )
+    visitor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile_visits_made",
+    )
+    day = models.DateField()
+    visits = models.PositiveIntegerField(default=1)
+    anonymous = models.BooleanField(default=False)
+    last_visited_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["owner", "visitor", "day"], name="profile_visit_owner_visitor_day_uniq"),
+        ]
+        indexes = [
+            models.Index(fields=["owner", "-day"], name="profile_visit_owner_day_idx"),
+        ]
 
 
 class UserVerification(TimeStampedModel):
@@ -360,6 +387,9 @@ class NewCategory(models.Model):
     parent = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.CASCADE, related_name="children"
     )
+    # Para presentarla mejor (cabecera de la categoría): una imagen y de qué trata.
+    description = models.TextField(_("description"), blank=True, default="", max_length=500)
+    image = models.ImageField(upload_to="categories/", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -436,6 +466,24 @@ class Task(TimeStampedModel):
         related_name="testimonial_tasks",
     )
     testimonial_status = models.CharField(max_length=16, blank=True, default="")
+    # "Siguiente recomendado": la publicación que su autor recomienda ver después
+    # (series de consejos, el próximo podcast...). Las que apuntan a esta son su "anterior".
+    next_task = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="previous_tasks",
+    )
+    # "Anterior recomendado": la que su autor recomienda ver antes. Si no elige ninguna,
+    # el anterior es la que recomienda esta como siguiente.
+    previous_task = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="recommended_after",
+    )
     # Publicada en un grupo: los integrantes la envían y un admin la aprueba
     # antes de que se vea (las de los admins se aprueban solas).
     group = models.ForeignKey(
@@ -581,6 +629,42 @@ class TaskSave(models.Model):
         ]
         indexes = [
             models.Index(fields=["user", "-created_at"], name="task_save_user_date_idx"),
+        ]
+
+
+class SaveCollection(models.Model):
+    """Colección (álbum) propia dentro de guardados: agrupa tareas guardadas.
+    `is_private`: solo la ve su dueño (así empiezan)."""
+    MAX_PER_USER = 50
+    MAX_NAME_LENGTH = 60
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="save_collections")
+    name = models.CharField(max_length=MAX_NAME_LENGTH)
+    is_private = models.BooleanField(default=True)
+    position = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["position", "created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "name"], name="save_collection_name_uniq"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.user_id})"
+
+
+class SaveCollectionItem(models.Model):
+    """Una guardada dentro de una colección. Quitarla de guardados la saca de todas."""
+    collection = models.ForeignKey(SaveCollection, on_delete=models.CASCADE, related_name="items")
+    saved = models.ForeignKey("TaskSave", on_delete=models.CASCADE, related_name="collection_items")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["collection", "saved"], name="save_collection_item_uniq"),
         ]
 
 
@@ -810,7 +894,19 @@ class ImagenFija(TimeStampedModel):
 
 
 class Postt(TimeStampedModel):
-    """Hilo de foro simple"""
+    """Hilo de foro simple. Quién lo ve: ver forum_access.py."""
+    VISIBILITY_PUBLIC = "public"
+    VISIBILITY_FOLLOWERS = "followers"
+    VISIBILITY_SUBSCRIBERS = "subscribers"
+    VISIBILITY_INVITED = "invited"
+    VISIBILITY_CHOICES = [
+        (VISIBILITY_PUBLIC, "Todos"),
+        (VISIBILITY_FOLLOWERS, "Seguidores"),
+        (VISIBILITY_SUBSCRIBERS, "Suscriptores"),
+        (VISIBILITY_INVITED, "Invitados"),
+    ]
+    MAX_INVITED = 50
+
     title = models.CharField(max_length=100, blank=True)
     content = models.TextField(blank=True)
     # Mismo formato que Task.categories ("Tema,Subtema,..."): de la app o propias del autor.
@@ -825,6 +921,15 @@ class Postt(TimeStampedModel):
     )
     tagged_users = models.ManyToManyField(
         settings.AUTH_USER_MODEL, blank=True, related_name="forum_post_tags",
+    )
+    # Foro de un grupo (vacío = foro general). Las respuestas heredan el grupo y la
+    # visibilidad de su post.
+    group = models.ForeignKey(
+        "CommunityGroup", on_delete=models.CASCADE, null=True, blank=True, related_name="forum_posts",
+    )
+    visibility = models.CharField(max_length=16, choices=VISIBILITY_CHOICES, default=VISIBILITY_PUBLIC)
+    invited_users = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="forum_invitations",
     )
 
     class Meta:

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from django.db.models import OuterRef, Subquery, Count, Q
+from django.db.models import Case, Count, IntegerField, OuterRef, Q, Subquery, Value, When
 from django.conf import settings
 from . import models as ms
 from .app_account import app_account_id_for
@@ -170,15 +170,25 @@ class UserSerializer(serializers.ModelSerializer):
 # ============================================================================
 
 class NewCategorySerializer(serializers.ModelSerializer):
+    image_url = serializers.SerializerMethodField()
+
     class Meta:
         model = ms.NewCategory
-        fields = ["id", "name", "pch", "parent", "created_at"]
+        fields = ["id", "name", "pch", "parent", "description", "image", "image_url", "created_at"]
         read_only_fields = ["id", "created_at"]
+        extra_kwargs = {"image": {"write_only": True, "required": False}, "description": {"required": False}}
+
+    def get_image_url(self, obj):
+        return file_to_abs_url(obj.image, self.context.get("request")) if obj.image else None
+
+    def validate_image(self, value):
+        return validate_image_upload(value) if value else value
 
     def validate(self, attrs):
         """Solo se rechaza si el mismo nombre ya existe DENTRO del mismo PCH."""
-        name = str(attrs.get("name") or "").strip()
-        pch = str(attrs.get("pch") or "").strip()
+        # Al editar solo la imagen o la descripción se conservan el nombre y el PCH.
+        name = str(attrs.get("name", getattr(self.instance, "name", "")) or "").strip()
+        pch = str(attrs.get("pch", getattr(self.instance, "pch", "")) or "").strip()
         request = self.context.get("request")
         is_admin = bool(
             request and request.user.is_authenticated
@@ -745,6 +755,11 @@ class TaskSerializer(serializers.ModelSerializer):
     group_info = serializers.SerializerMethodField()
     # Testimonio: en qué perfil se escribió ("Testimonio para @...").
     testimonial_for_info = serializers.SerializerMethodField()
+    # Anterior / siguiente recomendado y la serie completa (solo en el detalle:
+    # context["with_series"]). Ver task_series.py.
+    next_task_info = serializers.SerializerMethodField()
+    previous_task_info = serializers.SerializerMethodField()
+    series = serializers.SerializerMethodField()
     # Historia que comparte un testimonio: su texto, para verla como tarjeta con la cita.
     testimonial_story = serializers.SerializerMethodField()
 
@@ -757,6 +772,71 @@ class TaskSerializer(serializers.ModelSerializer):
             "group_status", "group_reviewed_by", "group_reviewed_at",
             "testimonial_status",
         ]
+
+    def _series_visible(self):
+        from .views import visible_tasks_for
+
+        request = self.context.get("request")
+        if not self.context.get("with_series") or not request:
+            return None
+        return visible_tasks_for(request.user)
+
+    @staticmethod
+    def _series_data(task, chosen=True):
+        return {
+            "id": str(task.pk),
+            "title": task.title,
+            "pch": task.pch,
+            "user": {"id": str(task.user_id), "username": task.user.username if task.user else ""},
+            # Si su autor la eligió (o es la que recomienda esta como siguiente).
+            "chosen": chosen,
+        }
+
+    def get_next_task_info(self, obj):
+        from .task_series import resolve_next
+
+        visible = self._series_visible()
+        if visible is None:
+            return None
+        task, chosen = resolve_next(obj, visible)
+        return self._series_data(task, chosen) if task else None
+
+    def get_previous_task_info(self, obj):
+        from .task_series import resolve_previous
+
+        visible = self._series_visible()
+        if visible is None:
+            return None
+        task, chosen = resolve_previous(obj, visible)
+        return self._series_data(task, chosen) if task else None
+
+    def get_series(self, obj):
+        """Las partes en orden (solo si hay más de una), marcando la actual."""
+        from .task_series import series_of
+
+        visible = self._series_visible()
+        if visible is None:
+            return None
+        parts = series_of(obj, visible)
+        if len(parts) < 2:
+            return None
+        return [{**self._series_data(part), "current": part.pk == obj.pk} for part in parts]
+
+    def validate_previous_task(self, value):
+        return self.validate_next_task(value)
+
+    def validate_next_task(self, value):
+        from .views import visible_tasks_for
+
+        if value is None:
+            return value
+        instance = getattr(self, "instance", None)
+        if instance is not None and value.pk == instance.pk:
+            raise serializers.ValidationError("No puede recomendarse a sí misma.")
+        request = self.context.get("request")
+        if request and not visible_tasks_for(request.user).filter(pk=value.pk).exists():
+            raise serializers.ValidationError("Esa publicación no existe.")
+        return value
 
     def get_testimonial_story(self, obj):
         if not obj.story_source_task_id:
@@ -1193,6 +1273,12 @@ class PosttSerializer(MessageExtrasMixin, serializers.ModelSerializer):
     title = serializers.CharField(required=False, allow_blank=True)
     likes_count = serializers.SerializerMethodField()
     has_liked = serializers.SerializerMethodField()
+    # Foro privado (ver forum_access.py): grupo, visibilidad e invitados.
+    group_info = serializers.SerializerMethodField()
+    invited_users = serializers.SerializerMethodField()
+    invited_user_ids = serializers.ListField(
+        child=serializers.UUIDField(), write_only=True, required=False, max_length=ms.Postt.MAX_INVITED,
+    )
 
     class Meta:
         model = ms.Postt
@@ -1200,6 +1286,7 @@ class PosttSerializer(MessageExtrasMixin, serializers.ModelSerializer):
             "id", "title", "content", "categories", "user", "parent", "replies", "created_at", "likes_count",
             "has_liked", "attachment", "attachment_url", "attachment_type", "aportacion", "aportacion_info",
             "tagged_users", "tagged_user_ids",
+            "group", "group_info", "visibility", "invited_users", "invited_user_ids",
         ]
         read_only_fields = ["id", "user", "created_at", "likes_count", "has_liked"]
         extra_kwargs = {
@@ -1224,6 +1311,68 @@ class PosttSerializer(MessageExtrasMixin, serializers.ModelSerializer):
             raise serializers.ValidationError(f"Máximo {self.MAX_CATEGORIES} categorías por post.")
         return ",".join(names)
 
+    def get_group_info(self, obj):
+        group = obj.group
+        if group is None:
+            return None
+        return {"id": str(group.id), "name": group.name, "is_private": group.is_private}
+
+    def get_invited_users(self, obj):
+        # A quiénes invitó: solo lo ve el autor.
+        request = self.context.get("request")
+        if not request or getattr(request.user, "pk", None) != obj.user_id:
+            return []
+        return [{"id": str(user.id), "username": user.username} for user in obj.invited_users.all()]
+
+    def validate(self, attrs):
+        from .forum_access import can_view_post, forum_root
+
+        attrs = super().validate(attrs)
+        instance = getattr(self, "instance", None)
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        parent = attrs.get("parent", getattr(instance, "parent", None))
+        if parent is not None:
+            # Una respuesta: solo en un post que puedes ver; hereda su grupo y su visibilidad.
+            if not can_view_post(parent, user):
+                raise serializers.ValidationError({"parent": "Ese post no existe."})
+            attrs["group"] = forum_root(parent).group
+            attrs.pop("visibility", None)
+            attrs.pop("invited_user_ids", None)
+            return attrs
+        if instance is not None and "group" in attrs and attrs["group"] != instance.group:
+            raise serializers.ValidationError({"group": "Un post no se puede mover de foro."})
+        group = attrs.get("group")
+        if instance is None and group is not None and not (user.is_staff or user.is_superuser):
+            is_member = ms.CommunityGroupMember.objects.filter(
+                group=group, user=user, status=ms.CommunityGroupMember.STATUS_ACTIVE,
+            ).exists()
+            if not is_member:
+                raise serializers.ValidationError({"group": "Únete al grupo para publicar en su foro."})
+        visibility = attrs.get("visibility", getattr(instance, "visibility", ms.Postt.VISIBILITY_PUBLIC))
+        if visibility == ms.Postt.VISIBILITY_INVITED and instance is None and not attrs.get("invited_user_ids"):
+            raise serializers.ValidationError({"invited_user_ids": "Elige al menos a una persona para invitar."})
+        return attrs
+
+    def _invite(self, instance, invited_ids, actor):
+        from .notifications import create_notification
+
+        users = list(User.objects.filter(id__in=invited_ids, is_active=True).exclude(pk=actor.pk))
+        before = set(instance.invited_users.values_list("id", flat=True))
+        instance.invited_users.set(users)
+        for user in users:
+            if user.pk in before:
+                continue
+            create_notification(
+                recipient=user,
+                actor=actor,
+                notification_type="forum_invite",
+                target_type="forum_post",
+                target_id=instance.pk,
+                data={"text": f"{actor.username or 'Alguien'} te invitó a una conversación del foro.", "title": instance.title},
+                dedupe_key=f"forum_invite:{instance.pk}:{user.pk}",
+            )
+
     def notify_tagged(self, instance, users, actor):
         from .notifications import create_notification
 
@@ -1243,10 +1392,21 @@ class PosttSerializer(MessageExtrasMixin, serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data["user"] = self.context["request"].user
+        invited_ids = validated_data.pop("invited_user_ids", None)
         # Si no hay title o está vacío, usar null o un valor por defecto
         if not validated_data.get("title"):
             validated_data["title"] = ""
-        return super().create(validated_data)
+        instance = super().create(validated_data)
+        if invited_ids and not instance.parent_id:
+            self._invite(instance, invited_ids, validated_data["user"])
+        return instance
+
+    def update(self, instance, validated_data):
+        invited_ids = validated_data.pop("invited_user_ids", None)
+        instance = super().update(instance, validated_data)
+        if invited_ids is not None and not instance.parent_id:
+            self._invite(instance, invited_ids, self.context["request"].user)
+        return instance
 
     def get_replies(self, obj):
         # `forum_replies.all()` reutiliza el prefetch de la vista (si existe).

@@ -828,7 +828,7 @@ def send_push_on_notification(sender, instance, created, **kwargs):
     if not tokens:
         return
 
-    title = instance.data.get("title") or "Sumsal"
+    title = instance.data.get("title") or "Aportaciones"
     body = (
         instance.data.get("excerpt")
         or instance.data.get("text")

@@ -288,7 +288,7 @@ class PushSignalTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 self._notify(text="Te dieron like")
         kwargs = delay.call_args.kwargs
-        self.assertEqual(kwargs["title"], "Sumsal")
+        self.assertEqual(kwargs["title"], "Aportaciones")
         self.assertEqual(kwargs["body"], "Te dieron like")
 
     def test_nothing_enqueued_before_commit(self):

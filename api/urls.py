@@ -14,7 +14,9 @@ from . import group_views
 from . import user_badges
 from . import testimonials
 from . import profile_activity
+from . import profile_visits
 from . import task_stats
+from . import save_collections
 from . import task_save_views
 # ─── Vistas JWT con throttling propio ────────────────────────────────────────
 class ThrottledLoginView(TokenObtainPairView):
@@ -52,6 +54,8 @@ urlpatterns = [
     path('users/<uuid:user_id>/favorited-by/', views.user_favorited_by, name='user-favorited-by'),
     path('users/<uuid:user_id>/recommendations/', views.user_recommendations, name='user-recommendations'),
     path('users/<uuid:user_id>/activity/', profile_activity.user_activity, name='user-activity'),
+    path('users/<uuid:user_id>/visit/', profile_visits.record_profile_visit, name='profile-visit-record'),
+    path('users/<uuid:user_id>/visits/', profile_visits.profile_visits, name='profile-visits'),
     path('users/<uuid:user_id>/portadas/', views.obtener_portadas_usuario, name='user-portadas'),
     path('users/<uuid:user_id>/imagen-fija/', views.obtener_imagen_fija_usuario, name='user-imagen-fija'),
     path('user-details/', views.get_user_details, name='user-details'),
@@ -121,6 +125,13 @@ urlpatterns = [
     path('tasks/<uuid:task_id>/save/', task_save_views.task_save, name='task-save'),
     path('favorites/category-pin/', task_save_views.task_category_pin, name='favorite-category-pin'),
     path('favorites/top/', task_save_views.favorites_top, name='favorites-top'),
+    # Colecciones (álbumes) dentro de guardados
+    path('collections/', save_collections.my_collections, name='collections'),
+    path('collections/user/<uuid:user_id>/', save_collections.user_collections, name='collections-user'),
+    path('collections/<uuid:collection_id>/', save_collections.collection_detail, name='collection-detail'),
+    path('collections/<uuid:collection_id>/items/', save_collections.collection_item, name='collection-items'),
+    path('collections/<uuid:collection_id>/items/<uuid:task_id>/', save_collections.collection_item, name='collection-item'),
+    path('tasks/<uuid:task_id>/collections/', save_collections.task_collections, name='task-collections'),
     path('favorites/top/<uuid:user_id>/', task_save_views.favorites_top, name='favorites-top-user'),
     path('search/directory/', views.search_directory, name='directory-search'),
 
