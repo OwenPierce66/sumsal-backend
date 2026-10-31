@@ -88,6 +88,23 @@ def leave(group, user):
     member.delete()
 
 
+def hand_over_groups(user):
+    """Antes de borrar una cuenta: cada grupo suyo pasa al admin o integrante más antiguo.
+
+    Devuelve los grupos donde no queda nadie, que se van con la cuenta.
+    """
+    empty = []
+    for owned in Member.objects.filter(user=user, role=Member.ROLE_OWNER).select_related("group"):
+        others = Member.objects.filter(group=owned.group, status=Member.STATUS_ACTIVE).exclude(user=user)
+        heir = others.filter(role=Member.ROLE_ADMIN).order_by("created_at").first() or others.order_by("created_at").first()
+        if heir:
+            heir.role = Member.ROLE_OWNER
+            heir.save(update_fields=["role", "updated_at"])
+        else:
+            empty.append(owned.group)
+    return empty
+
+
 def _retire_join_request(member):
     for admin in active_admins(member.group):
         retire_notification(dedupe_key=f"group_join_request:{member.pk}:{admin.user_id}")

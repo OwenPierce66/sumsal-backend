@@ -11,6 +11,7 @@ from decimal import ROUND_HALF_UP, Decimal
 import stripe
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import Profile, Subscription
@@ -25,6 +26,8 @@ MAX_AMOUNT_CENTS = {Subscription.CURRENCY_MXN: 2_000_000, Subscription.CURRENCY_
 # Mismo umbral que la web antigua para la insignia "Suscripción +".
 SUB_PLUS_THRESHOLD_USD = Decimal("8")
 GIFT_NOTIFICATION = "subscription_gift"
+# Estados de Stripe en los que ya no se vuelve a cobrar.
+ENDED_STATUSES = ("canceled", "incomplete_expired")
 
 
 class SubscriptionsUnavailable(Exception):
@@ -213,6 +216,42 @@ def set_auto_renew(local, auto_renew):
         **({"cancel_at": ""} if auto_renew else {}),
     )
     return apply_stripe_subscription(local, stripe_sub)
+
+
+def _cancel_in_stripe(stripe_subscription_id):
+    try:
+        stripe.Subscription.cancel(stripe_subscription_id, api_key=_api_key())
+    except stripe.InvalidRequestError as exc:
+        # Si ya no existe o ya estaba cancelada, tampoco hay nada más que cobrar.
+        if exc.code == "resource_missing":
+            return
+        if _field(_retrieve_subscription(stripe_subscription_id), "status") != "canceled":
+            raise
+
+
+def end_billing(user):
+    """Antes de borrar una cuenta: nadie sigue pagando por ella ni a su nombre.
+
+    Cada suscripción queda marcada al cancelarse: si falla a la mitad, reintentar
+    continúa con las que falten.
+    """
+    subscriptions = (
+        Subscription.objects.filter(Q(subscriber=user) | Q(recipient=user))
+        .exclude(stripe_subscription_id="")
+        .exclude(status__in=ENDED_STATUSES)
+    )
+    for local in subscriptions:
+        _cancel_in_stripe(local.stripe_subscription_id)
+        local.status = "canceled"
+        local.save(update_fields=["status", "updated_at"])
+
+    # Sus datos de pago son lo único que queda en Stripe, y no vale perder la cuenta por eso.
+    customer_id = Profile.objects.filter(user=user).values_list("stripe_customer_id", flat=True).first()
+    if customer_id and stripe_configured():
+        try:
+            stripe.Customer.delete(customer_id, api_key=_api_key())
+        except stripe.StripeError:
+            logger.exception("No se pudo borrar de Stripe al cliente %s", customer_id)
 
 
 def _local_for(stripe_obj, stripe_subscription_id=None):

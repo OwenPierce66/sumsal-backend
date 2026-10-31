@@ -35,7 +35,21 @@ class LogoutThrottle(UserRateThrottle):
     scope = "logout"
 
 
+class PasswordResetThrottle(AnonRateThrottle):
+    """Limita cuántos códigos para recuperar la contraseña se piden desde una IP."""
+    scope = "password_reset"
+
+
+class PasswordResetConfirmThrottle(AnonRateThrottle):
+    """Limita los intentos de adivinar un código desde una IP."""
+    scope = "password_reset_confirm"
+
+
 # ─── Usuario autenticado ──────────────────────────────────────────────────────
+
+class DeleteAccountThrottle(UserRateThrottle):
+    scope = "delete_account"
+
 
 class UserMeThrottle(UserRateThrottle):
     scope = "user_me"

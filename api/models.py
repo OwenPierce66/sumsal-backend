@@ -1009,6 +1009,23 @@ class SubFuentesCommentPost(models.Model):
 
 
 
+class PasswordResetCode(models.Model):
+    """Código de un solo uso para recuperar la contraseña. Solo se guarda su hash."""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_codes",
+    )
+    code_hash = models.CharField(max_length=64)
+    attempts = models.PositiveSmallIntegerField(default=0)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "-created_at"], name="password_reset_user_idx")]
+
+
 # ── Push Notifications ────────────────────────────────────────────────────────
 
 class PushToken(models.Model):

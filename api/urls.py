@@ -7,6 +7,7 @@ from rest_framework_simplejwt.views import (
     TokenRefreshView,
 )
 
+from . import account
 from . import push_views
 from . import subscription_views
 from . import petition_support_views
@@ -40,6 +41,10 @@ urlpatterns = [
     path('auth/login/', ThrottledLoginView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', ThrottledRefreshView.as_view(), name='token_refresh'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
+    path('auth/password-reset/', account.password_reset_request, name='password-reset'),
+    path('auth/password-reset/confirm/', account.password_reset_confirm, name='password-reset-confirm'),
+    path('eliminar-cuenta/', account.account_deletion_page, name='account-deletion-page'),
+    path('users/me/delete/', account.delete_account, name='user-delete'),
     path('users/me/', views.UserMeView.as_view(), name='user-me'),
     path('users/me/tasks/', views.UserMyTasksView.as_view(), name='user-my-tasks'),
     path('users/me/relations/', views.my_relations, name='user-my-relations'),

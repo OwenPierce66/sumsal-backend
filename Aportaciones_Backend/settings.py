@@ -161,6 +161,10 @@ REST_FRAMEWORK = {
         "register": "5/hour",
         # Refresh: 60/hora — el silent-refresh ocurre aprox cada expiración
         "refresh":  "60/hour",
+        # Recuperar contraseña: por IP; además cada cuenta tiene sus propios topes (api/account.py)
+        "password_reset": "10/hour",
+        "password_reset_confirm": "20/hour",
+        "delete_account": "10/hour",
         # Logout: 20/hora — uso legítimo máximo
         "logout":   "20/hour",
         # Traductor de mensajes: tope diario por usuario (controla el gasto del proveedor)
@@ -483,6 +487,19 @@ TRANSLATION_MAX_CHARS = int(os.getenv("TRANSLATION_MAX_CHARS", "5000"))
 
 # Cuenta que representa a la App: el "like de la App" que da un superadmin sale a su nombre.
 APP_ACCOUNT_EMAIL = os.getenv("APP_ACCOUNT_EMAIL", "owen@gmail.com").strip()
+
+# Correo de la app: se envía por la API de Brevo porque el plan gratis de Render bloquea SMTP.
+# Sin clave no se envía nada; en desarrollo el correo sale en los logs.
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "").strip()
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "").strip()
+if BREVO_API_KEY and DEFAULT_FROM_EMAIL:
+    EMAIL_BACKEND = "api.email_backend.BrevoEmailBackend"
+elif DEBUG:
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+else:
+    EMAIL_BACKEND = "django.core.mail.backends.dummy.EmailBackend"
+# Dónde pedir que eliminen una cuenta sin tener la app (página /api/eliminar-cuenta/).
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "").strip()
 
 # Suscripciones con Stripe. Las claves solo viven en el backend.
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()

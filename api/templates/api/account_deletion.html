@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Eliminar tu cuenta de Aportaciones</title>
+  <style>
+    body { margin: 0; background: #fff; color: #212529; font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 620px; margin: 0 auto; padding: 32px 16px 56px; }
+    h1 { font-size: 26px; line-height: 1.25; margin: 0 0 12px; }
+    h2 { font-size: 18px; margin: 28px 0 8px; }
+    ol, ul { padding-left: 22px; margin: 0; }
+    li { margin-bottom: 6px; }
+    a { color: #1971c2; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #15181c; color: #e9ecef; }
+      a { color: #74c0fc; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Eliminar tu cuenta de Aportaciones</h1>
+    <p>Eliminar tu cuenta es definitivo: no se puede deshacer.</p>
+
+    <h2>Desde la app</h2>
+    <ol>
+      <li>Abre tu perfil y toca el menú de los tres puntos.</li>
+      <li>Toca <strong>Eliminar cuenta</strong>.</li>
+      <li>Escribe tu contraseña y confirma. Se elimina al momento.</li>
+    </ol>
+    {% if support_email %}
+    <h2>Sin la app</h2>
+    <p>
+      Escríbenos a <a href="mailto:{{ support_email }}?subject=Eliminar%20mi%20cuenta">{{ support_email }}</a>
+      desde el correo de tu cuenta. La eliminamos en un máximo de 30 días.
+    </p>
+    {% endif %}
+
+    <h2>Qué se borra</h2>
+    <ul>
+      <li>Tu perfil, publicaciones, comentarios, likes y guardados.</li>
+      <li>Tus conversaciones y los archivos que subiste.</li>
+      <li>Las suscripciones que pagas o recibes: se cancelan y ya no se cobran.</li>
+    </ul>
+
+    <h2>Qué se conserva</h2>
+    <p>
+      Los grupos que creaste siguen para sus integrantes, sin tus publicaciones. Los comprobantes
+      de pagos ya hechos los conserva Stripe, nuestro procesador de pagos.
+    </p>
+  </main>
+</body>
+</html>
